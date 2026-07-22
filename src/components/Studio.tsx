@@ -115,7 +115,7 @@ function Canvas() {
         defaultViewport={{ x: 0, y: 0, zoom: 0.87 }}
         nodeDragThreshold={2}
       >
-        <Background variant={BackgroundVariant.Dots} gap={26} size={1.5} color="rgba(255,255,255,0.09)" />
+        <Background variant={BackgroundVariant.Dots} gap={26} size={1.5} color="rgba(255,255,255,0.17)" />
       </ReactFlow>
 
       <TemplateBar />

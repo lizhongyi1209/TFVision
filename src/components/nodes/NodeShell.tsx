@@ -94,8 +94,8 @@ export function NodeShell({
       <div
         className={cn(
           "relative overflow-hidden rounded-panel border bg-card transition-all duration-200",
-          selected ? "border-accent/70 shadow-[0_0_0_1px_rgba(230,178,119,0.35),0_24px_60px_rgba(0,0,0,0.5)]" : "border-line hover:border-line-2",
-          running && "border-accent/40",
+          selected ? "border-line-2 shadow-[0_0_0_1px_rgba(255,255,255,0.28),0_24px_60px_rgba(0,0,0,0.5)]" : "border-line hover:border-line-2",
+          running && "border-white/25",
           className,
         )}
       >

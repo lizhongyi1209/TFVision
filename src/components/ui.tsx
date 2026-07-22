@@ -20,7 +20,7 @@ export function Button({
   type?: "button" | "submit";
 }) {
   const variants: Record<string, string> = {
-    primary: "bg-accent text-ink hover:bg-accent-2 shadow-[0_10px_34px_-8px_rgba(230,178,119,0.55)]",
+    primary: "bg-accent text-ink hover:bg-accent-2 shadow-[0_10px_34px_-8px_rgba(255,255,255,0.35)]",
     ghost: "border border-line text-fg hover:bg-white/5 hover:border-line-2",
     subtle: "text-fg-dim hover:text-fg hover:bg-white/5",
     danger: "border border-line text-danger hover:bg-danger/10 hover:border-danger/40",

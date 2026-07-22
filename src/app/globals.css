@@ -15,8 +15,8 @@
   --color-fg: #f2f1ef;
   --color-fg-dim: #a3a1a6;
   --color-fg-mute: #67656c;
-  --color-accent: #e6b277;
-  --color-accent-2: #f2c48d;
+  --color-accent: #f5f5f4;
+  --color-accent-2: #ffffff;
   --color-danger: #f87171;
 
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -83,7 +83,7 @@ body {
   }
 }
 .scan-sweep {
-  background: linear-gradient(180deg, transparent, rgba(230, 178, 119, 0.28), transparent);
+  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.2), transparent);
   animation: scan 2.1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
@@ -124,7 +124,7 @@ body {
 }
 
 ::selection {
-  background: rgba(230, 178, 119, 0.28);
+  background: rgba(255, 255, 255, 0.22);
 }
 
 textarea,
@@ -187,8 +187,8 @@ input {
 
 /* Box-select rectangle */
 .react-flow__selection {
-  background: rgba(230, 178, 119, 0.06);
-  border: 1px solid rgba(230, 178, 119, 0.4);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.35);
 }
 
 .react-flow__node {

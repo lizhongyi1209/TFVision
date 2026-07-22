@@ -212,7 +212,7 @@ export const VideoNode = memo(function VideoNode({ id, selected, data }: NodePro
               "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-all active:scale-95",
               running
                 ? "bg-white/10 text-fg-mute"
-                : "bg-accent text-ink shadow-[0_6px_20px_-6px_rgba(230,178,119,0.6)] hover:bg-accent-2",
+                : "bg-accent text-ink shadow-[0_6px_20px_-6px_rgba(255,255,255,0.4)] hover:bg-accent-2",
             )}
           >
             {running ? <Spinner size={14} /> : <Icon name="ArrowRight" size={14} weight="bold" />}
