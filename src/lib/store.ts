@@ -14,14 +14,15 @@ import {
   type Connection,
   type XYPosition,
 } from "@xyflow/react";
-import type {
-  ImageNodeData,
-  JobStatusResponse,
-  NodeKind,
-  PublicSettings,
-  TextNodeData,
-  VideoNodeData,
-  WorkspaceFile,
+import {
+  MAX_IMAGE_REFERENCES,
+  type ImageNodeData,
+  type JobStatusResponse,
+  type NodeKind,
+  type PublicSettings,
+  type TextNodeData,
+  type VideoNodeData,
+  type WorkspaceFile,
 } from "./types";
 import { styleSuffix } from "./models";
 import { downscaleImageSrc, fakeProgressCurve } from "./utils";
@@ -357,8 +358,9 @@ export const useStudio = create<StudioState>((set, get) => ({
         const t = (src.data as TextNodeData).text.trim();
         if (t) textParts.push(t);
       } else if (src.type === "image") {
-        const u = (src.data as ImageNodeData).url;
-        if (u) refSrcs.push(u);
+        const imageData = src.data as ImageNodeData;
+        const sources = imageData.urls.length ? imageData.urls : imageData.url ? [imageData.url] : [];
+        refSrcs.push(...sources);
       }
     }
     const own = data.prompt.trim();
@@ -371,12 +373,13 @@ export const useStudio = create<StudioState>((set, get) => ({
       return;
     }
 
-    // The node's own image (uploaded or previous result) rides along as the
-    // base/first reference — classic img2img. Refs follow in connect order.
+    // The node's own uploaded/result set rides along first, followed by
+    // connected image references. The gateway receives at most 10 images.
     const images: string[] = [];
     try {
-      if (data.url) images.push(await srcToRefDataUrl(data.url));
-      for (const src of refSrcs) images.push(await srcToRefDataUrl(src));
+      const ownSources = data.urls.length ? data.urls : data.url ? [data.url] : [];
+      const sources = [...ownSources, ...refSrcs].slice(0, MAX_IMAGE_REFERENCES);
+      for (const src of sources) images.push(await srcToRefDataUrl(src));
     } catch {
       get().showToast("参考图处理失败", "error");
       return;

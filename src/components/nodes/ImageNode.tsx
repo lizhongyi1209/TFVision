@@ -8,7 +8,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { AppNode } from "@/lib/store";
 import { useStudio } from "@/lib/store";
-import type { ImageNodeData, ModelName, Quality, Resolution } from "@/lib/types";
+import { MAX_IMAGE_REFERENCES, type ImageNodeData, type ModelName, type Quality, type Resolution } from "@/lib/types";
 import {
   ASPECT_RATIOS,
   GPT_IMAGE_2_RATIOS,
@@ -19,10 +19,13 @@ import {
   modelLabel,
   resolutionsFor,
 } from "@/lib/models";
-import { cn, downloadUrl, fileToDataURL, progressStageLabel } from "@/lib/utils";
+import { cn, fileToDataURL, progressStageLabel } from "@/lib/utils";
 import { Icon } from "../icons";
 import { NodeShell, RunningVeil } from "./NodeShell";
 import { Chip, Spinner } from "../ui";
+
+const isImageFile = (file: File) =>
+  file.type.startsWith("image/") || /\.(?:png|jpe?g|webp)$/i.test(file.name);
 
 function ParamPopover({ data, nodeId, onClose }: { data: ImageNodeData; nodeId: string; onClose: () => void }) {
   const updateNode = useStudio((s) => s.updateNode);
@@ -180,10 +183,11 @@ function StylePopover({ data, nodeId, onClose }: { data: ImageNodeData; nodeId: 
   );
 }
 
-export const ImageNode = memo(function ImageNode({ id, selected, data }: NodeProps<AppNode>) {
+export const ImageNode = memo(function ImageNode({ id, selected, dragging, data }: NodeProps<AppNode>) {
   const d = data as ImageNodeData;
   const updateNode = useStudio((s) => s.updateNode);
   const generateImage = useStudio((s) => s.generateImage);
+  const showToast = useStudio((s) => s.showToast);
   const edges = useStudio((s) => s.edges);
   const nodes = useStudio((s) => s.nodes);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -191,6 +195,9 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
   const paramAreaRef = useRef<HTMLDivElement>(null);
   const styleAreaRef = useRef<HTMLDivElement>(null);
   const [popover, setPopover] = useState<"none" | "params" | "model" | "style">("none");
+  const [fileDragActive, setFileDragActive] = useState(false);
+  const [focusedImageIndex, setFocusedImageIndex] = useState<number | null>(null);
+  const [composerOpen, setComposerOpen] = useState(false);
 
   useEffect(() => {
     if (popover === "none") return;
@@ -213,25 +220,102 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
     };
   }, [popover]);
 
+  useEffect(() => {
+    if (!selected || dragging) {
+      setPopover("none");
+      setComposerOpen(false);
+    }
+  }, [dragging, selected]);
+
   const running = d.status === "running";
-  const refCount = edges.filter((e) => {
-    if (e.target !== id) return false;
+  const linkedRefCount = edges.reduce((count, e) => {
+    if (e.target !== id) return count;
     const src = nodes.find((n) => n.id === e.source);
-    return src?.type === "image" && !!(src.data as ImageNodeData).url;
-  }).length;
+    if (src?.type !== "image") return count;
+    const imageData = src.data as ImageNodeData;
+    return count + (imageData.urls.length || (imageData.url ? 1 : 0));
+  }, 0);
 
   const combo = comboError(d.model, d.resolution, d.billing, d.aspectRatio);
   const styleLabel = STYLE_PRESETS.find((s) => s.id === d.styleId)?.label ?? "风格";
+  const ownImageUrls = d.urls.length ? d.urls : d.url ? [d.url] : [];
+  const canAddImages = ownImageUrls.length < MAX_IMAGE_REFERENCES;
+  const focusedImageUrl = focusedImageIndex === null ? null : ownImageUrls[focusedImageIndex] ?? null;
+  const activeImageUrl = focusedImageUrl ?? d.url ?? ownImageUrls[0] ?? null;
+  const galleryColumns =
+    ownImageUrls.length <= 4 ? 2 : ownImageUrls.length <= 6 ? 3 : ownImageUrls.length <= 8 ? 4 : ownImageUrls.length === 9 ? 3 : 5;
+  const galleryRows = ownImageUrls.length === 2 ? 1 : ownImageUrls.length === 9 ? 3 : 2;
+  const hasFeaturedTile = ownImageUrls.length === 3 || ownImageUrls.length === 5 || ownImageUrls.length === 7;
 
-  const pickFile = async (file: File | null) => {
-    if (!file) return;
+  useEffect(() => {
+    if (focusedImageIndex !== null && focusedImageIndex >= ownImageUrls.length) setFocusedImageIndex(null);
+  }, [focusedImageIndex, ownImageUrls.length]);
+
+  const pickFiles = async (files: File[] | FileList) => {
+    const imageFiles = Array.from(files).filter(isImageFile);
+    if (!imageFiles.length) {
+      showToast("请选择 PNG、JPG 或 WebP 图片", "error");
+      return;
+    }
+
+    const remaining = MAX_IMAGE_REFERENCES - ownImageUrls.length;
+    if (remaining <= 0) {
+      showToast(`每个图片节点最多添加 ${MAX_IMAGE_REFERENCES} 张参考图`, "error");
+      return;
+    }
+
+    const acceptedFiles = imageFiles.slice(0, remaining);
     try {
-      const url = await fileToDataURL(file);
-      updateNode(id, { url, urls: [url], activeIndex: 0, status: "idle", error: undefined });
+      const addedUrls = await Promise.all(acceptedFiles.map(fileToDataURL));
+      const urls = [...ownImageUrls, ...addedUrls];
+      const url = d.url && urls.includes(d.url) ? d.url : urls[0];
+      const activeIndex = urls.indexOf(url);
+      updateNode(id, {
+        url,
+        urls,
+        activeIndex,
+        status: "idle",
+        error: undefined,
+      });
+      setFocusedImageIndex(null);
+      if (acceptedFiles.length < imageFiles.length) {
+        showToast(`已达到上限，仅添加前 ${remaining} 张图片`, "info");
+      }
     } catch {
-      /* toast handled globally */
+      showToast("图片读取失败", "error");
     }
   };
+
+  const removeImage = (index: number) => {
+    const currentIndex = Math.max(0, ownImageUrls.indexOf(d.url ?? ""));
+    const urls = ownImageUrls.filter((_, imageIndex) => imageIndex !== index);
+    if (!urls.length) {
+      setFocusedImageIndex(null);
+      updateNode(id, { url: null, urls: [], activeIndex: 0, status: "idle" });
+      return;
+    }
+
+    const activeIndex =
+      index < currentIndex ? currentIndex - 1 : index === currentIndex ? Math.min(index, urls.length - 1) : currentIndex;
+    setFocusedImageIndex((focusedIndex) => {
+      if (focusedIndex === null || focusedIndex === index) return null;
+      return focusedIndex > index ? focusedIndex - 1 : focusedIndex;
+    });
+    updateNode(id, { url: urls[activeIndex], urls, activeIndex, status: "idle" });
+  };
+
+  const focusImage = (url: string, index: number) => {
+    setFocusedImageIndex(index);
+    setComposerOpen(true);
+    updateNode(id, { url, activeIndex: index });
+  };
+
+  const hasImageDrop = (dataTransfer: DataTransfer) =>
+    Array.from(dataTransfer.items).some(
+      (item) => item.kind === "file" && (!item.type || item.type.startsWith("image/")),
+    );
+  const nodeWidth = d.width || 470;
+  const nodeHeight = d.height ?? nodeWidth;
 
   return (
     <NodeShell
@@ -239,31 +323,120 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
       selected={selected}
       label={d.label}
       icon="Image"
-      width={d.width || 470}
-      height={d.height}
+      width={nodeWidth}
+      height={nodeHeight}
       running={running}
       frameless
-      portTop={d.height ? d.height / 2 : 132}
+      portTop={nodeHeight / 2}
+      resizeHandleTop={Math.max(8, nodeHeight - 32)}
+      onResizeBegin={() => setComposerOpen(false)}
     >
       {/* ── Canvas area ── */}
       <div
         data-body
-        style={d.height ? { height: d.height } : undefined}
+        style={{ height: nodeHeight }}
         className={cn(
-          "relative flex min-h-[264px] items-center justify-center overflow-hidden rounded-[12px] border bg-panel transition-colors",
-          selected ? "border-white/30 shadow-[0_18px_50px_rgba(0,0,0,0.3)]" : "border-line hover:border-line-2",
+          "relative flex min-h-[264px] items-center justify-center overflow-hidden rounded-[12px] border bg-panel transition-[border-color,box-shadow,transform] duration-200",
+          fileDragActive
+            ? "cursor-copy scale-[1.008] border-white/55 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.12),0_18px_50px_rgba(0,0,0,0.38)]"
+            : selected
+              ? "border-white/30 shadow-[0_18px_50px_rgba(0,0,0,0.3)]"
+              : "border-line hover:border-line-2",
         )}
-        onDragOver={(e) => e.preventDefault()}
+        onDragEnter={(e) => {
+          if (!hasImageDrop(e.dataTransfer)) return;
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = canAddImages ? "copy" : "none";
+          setFileDragActive(canAddImages);
+        }}
+        onDragOver={(e) => {
+          if (!hasImageDrop(e.dataTransfer)) return;
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = canAddImages ? "copy" : "none";
+          setFileDragActive(canAddImages);
+        }}
+        onDragLeave={(e) => {
+          const nextTarget = e.relatedTarget as globalThis.Node | null;
+          if (!nextTarget || !e.currentTarget.contains(nextTarget)) setFileDragActive(false);
+        }}
         onDrop={(e) => {
           e.preventDefault();
-          void pickFile(e.dataTransfer.files?.[0] ?? null);
+          e.stopPropagation();
+          setFileDragActive(false);
+          void pickFiles(e.dataTransfer.files);
         }}
       >
-        {d.url ? (
+        {fileDragActive ? (
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-ink/75 backdrop-blur-[3px]">
+            <div className="tf-drop-target-enter flex flex-col items-center text-center">
+              <span className="tf-drop-target-pulse mb-3 flex h-12 w-12 items-center justify-center rounded-full border border-white/30 bg-white/[0.08] text-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]">
+                <Icon name="UploadSimple" size={21} weight="bold" />
+              </span>
+              <span className="text-[13px] font-medium tracking-wide text-fg">松开以添加参考图</span>
+              <span className="mt-1 text-[10px] uppercase tracking-[0.12em] text-fg-mute">
+                PNG · JPG · WEBP · 最多 {MAX_IMAGE_REFERENCES} 张
+              </span>
+            </div>
+          </div>
+        ) : null}
+
+        {ownImageUrls.length > 1 && !focusedImageUrl ? (
+          <div
+            className="absolute inset-1.5 grid gap-1.5"
+            style={{
+              gridTemplateColumns: `repeat(${galleryColumns}, minmax(0, 1fr))`,
+              gridTemplateRows: `repeat(${galleryRows}, minmax(0, 1fr))`,
+            }}
+          >
+            {ownImageUrls.map((url, index) => (
+              <div
+                key={`${index}-${url.slice(0, 24)}`}
+                className={cn(
+                  "group/gallery relative min-h-0 overflow-hidden rounded-[8px] bg-ink",
+                  index === 0 && hasFeaturedTile && "row-span-2",
+                )}
+              >
+                <button
+                  type="button"
+                  title={`放大查看参考图 ${index + 1}`}
+                  onClick={() => focusImage(url, index)}
+                  className="nodrag h-full w-full overflow-hidden"
+                >
+                  <img
+                    src={url}
+                    alt={`参考图 ${index + 1}`}
+                    className="h-full w-full object-cover transition-transform duration-300 group-hover/gallery:scale-[1.035]"
+                    draggable={false}
+                  />
+                </button>
+                <span className="pointer-events-none absolute left-1.5 top-1.5 rounded-full bg-ink/65 px-1.5 py-0.5 text-[9px] tabular-nums text-fg-dim opacity-0 backdrop-blur transition-opacity group-hover/gallery:opacity-100">
+                  {index + 1}
+                </span>
+                <button
+                  type="button"
+                  title={`移除参考图 ${index + 1}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    removeImage(index);
+                  }}
+                  className="nodrag absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-white/15 bg-ink/80 text-fg-mute opacity-0 backdrop-blur transition-[opacity,color,transform] hover:scale-105 hover:text-danger group-hover/gallery:opacity-100"
+                >
+                  <Icon name="X" size={10} weight="bold" />
+                </button>
+              </div>
+            ))}
+            <span className="pointer-events-none absolute bottom-2 left-2 rounded-full border border-white/10 bg-ink/75 px-2 py-1 text-[10px] tabular-nums text-fg-dim backdrop-blur">
+              {ownImageUrls.length}/{MAX_IMAGE_REFERENCES}
+            </span>
+          </div>
+        ) : activeImageUrl ? (
           <img
-            src={d.url}
-            alt=""
-            className={cn("object-contain", d.height ? "h-full w-full" : "max-h-[420px] w-full")}
+            src={activeImageUrl}
+            alt={focusedImageUrl ? `参考图 ${(focusedImageIndex ?? 0) + 1}` : "参考图"}
+            onClick={() => setComposerOpen(true)}
+            className="nodrag h-full w-full cursor-pointer object-contain"
             draggable={false}
           />
         ) : (
@@ -275,7 +448,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
               className="flex items-center gap-2 self-center rounded-control px-2 py-1 hover:bg-white/5 hover:text-fg"
               onClick={() => fileRef.current?.click()}
             >
-              <Icon name="UploadSimple" size={13} /> 上传图片 · 图生图
+              <Icon name="UploadSimple" size={13} /> 上传参考图 · 可多选
             </button>
             <span className="flex items-center gap-2 self-center px-2 py-1">
               <Icon name="TextT" size={13} /> 直接输入文字生成
@@ -286,6 +459,22 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
           </div>
         )}
 
+        {focusedImageUrl && ownImageUrls.length > 1 ? (
+          <button
+            type="button"
+            title="返回全部参考图"
+            aria-label={`返回全部参考图，当前第 ${(focusedImageIndex ?? 0) + 1} 张，共 ${ownImageUrls.length} 张`}
+            onClick={(event) => {
+              event.stopPropagation();
+              setFocusedImageIndex(null);
+            }}
+            className="nodrag absolute left-2 top-2 z-10 flex h-8 items-center gap-1 rounded-full border border-white/15 bg-ink/75 px-2.5 text-[10px] tabular-nums text-fg-dim shadow-[0_8px_24px_rgba(0,0,0,0.28)] backdrop-blur-md transition-colors hover:border-white/25 hover:text-fg"
+          >
+            <Icon name="GridFour" size={12} />
+            <span>{(focusedImageIndex ?? 0) + 1}/{ownImageUrls.length}</span>
+          </button>
+        ) : null}
+
         {running ? <RunningVeil progress={d.progress} label={progressStageLabel(d.progress)} /> : null}
 
         {d.status === "failed" && d.error ? (
@@ -295,48 +484,15 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
           </div>
         ) : null}
 
-        {/* Multi-result film strip */}
-        {d.urls.length > 1 ? (
-          <div className="absolute bottom-2 left-1/2 flex -translate-x-1/2 gap-1.5 rounded-full bg-ink/70 p-1.5 backdrop-blur">
-            {d.urls.map((u, i) => (
-              <button
-                key={i}
-                type="button"
-                onClick={() => updateNode(id, { url: u, activeIndex: i })}
-                className={cn(
-                  "h-9 w-9 overflow-hidden rounded-lg border transition-all",
-                  d.activeIndex === i ? "border-accent" : "border-transparent opacity-60 hover:opacity-100",
-                )}
-              >
-                <img src={u} alt="" className="h-full w-full object-cover" draggable={false} />
-              </button>
-            ))}
-          </div>
-        ) : null}
-
-        {/* Hover utilities on the image */}
-        {d.url && !running ? (
-          <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover/node:opacity-100">
+        {/* Single/focused image removal. Multi-image overview owns per-tile controls. */}
+        {activeImageUrl && !running && (ownImageUrls.length === 1 || focusedImageIndex !== null) ? (
+          <div className="absolute right-2 top-2 opacity-0 transition-opacity group-hover/node:opacity-100">
             <button
               type="button"
-              title="下载"
-              onClick={() => downloadUrl(d.url!, `tfvision-${Date.now()}.png`)}
-              className="rounded-full bg-ink/70 p-2 text-fg-dim backdrop-blur hover:text-fg"
-            >
-              <Icon name="Download" size={14} />
-            </button>
-            <button
-              type="button"
-              title="更换图片"
-              onClick={() => fileRef.current?.click()}
-              className="rounded-full bg-ink/70 p-2 text-fg-dim backdrop-blur hover:text-fg"
-            >
-              <Icon name="Swap" size={14} />
-            </button>
-            <button
-              type="button"
-              title="清除图片"
-              onClick={() => updateNode(id, { url: null, urls: [], activeIndex: 0, status: "idle" })}
+              title={focusedImageIndex === null ? "移除参考图" : "移除当前参考图"}
+              onClick={() => {
+                removeImage(focusedImageIndex ?? 0);
+              }}
               className="rounded-full bg-ink/70 p-2 text-fg-dim backdrop-blur hover:text-danger"
             >
               <Icon name="X" size={14} />
@@ -348,23 +504,25 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
           ref={fileRef}
           type="file"
           accept="image/png,image/jpeg,image/webp"
+          multiple
           className="hidden"
           onChange={(e) => {
-            void pickFile(e.target.files?.[0] ?? null);
+            if (e.target.files) void pickFiles(e.target.files);
             e.currentTarget.value = "";
           }}
         />
       </div>
 
       {/* ── Composer ── */}
-      <div
-        className="relative left-1/2 mt-3 w-[calc(100%+192px)] -translate-x-1/2 rounded-[18px] border border-line bg-card p-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.24)] nodrag"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
+      {composerOpen && selected && !dragging ? (
+        <div
+          className="relative left-1/2 mt-3 w-[calc(100%+192px)] -translate-x-1/2 rounded-[18px] border border-line bg-card p-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.24)] nodrag"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
         <div className="mb-3 flex items-center gap-1.5">
-          <Chip title="来自连线的参考图数量">
+          <Chip title="当前参与生成的参考图数量">
             <Icon name="Paperclip" size={11} />
-            参考 {refCount + (d.url ? 1 : 0)}
+            参考 {Math.min(MAX_IMAGE_REFERENCES, linkedRefCount + ownImageUrls.length)}/{MAX_IMAGE_REFERENCES}
           </Chip>
           <div ref={styleAreaRef} className="relative">
             {popover === "style" ? <StylePopover data={d} nodeId={id} onClose={() => setPopover("none")} /> : null}
@@ -432,7 +590,8 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
           </button>
         </div>
         {combo ? <div className="mt-1.5 text-[11px] text-danger">{combo}</div> : null}
-      </div>
+        </div>
+      ) : null}
     </NodeShell>
   );
 });

@@ -120,6 +120,8 @@ export type TextNodeData = {
   [key: string]: unknown;
 };
 
+export const MAX_IMAGE_REFERENCES = 10;
+
 export type ImageNodeData = {
   label: string;
   url: string | null;

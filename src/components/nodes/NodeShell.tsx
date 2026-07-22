@@ -24,6 +24,8 @@ export function NodeShell({
   showHeaderActions = true,
   frameless = false,
   portTop,
+  resizeHandleTop,
+  onResizeBegin,
 }: {
   id: string;
   selected?: boolean;
@@ -43,6 +45,10 @@ export function NodeShell({
   frameless?: boolean;
   /** 连线端口相对节点顶部的位置；适合预览区与编辑区分离的节点。 */
   portTop?: number | string;
+  /** 缩放把手相对节点顶部的位置；未设置时贴合整个节点的右下角。 */
+  resizeHandleTop?: number;
+  /** 开始缩放时触发，可用于收起会影响节点尺寸的浮层。 */
+  onResizeBegin?: () => void;
 }) {
   const removeNode = useStudio((s) => s.removeNode);
   const duplicateNode = useStudio((s) => s.duplicateNode);
@@ -74,6 +80,7 @@ export function NodeShell({
   const onResizeStart = (e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    onResizeBegin?.();
     const zoom = rf.getZoom() || 1;
     const startX = e.clientX;
     const startY = e.clientY;
@@ -176,14 +183,22 @@ export function NodeShell({
       {/* 右下角缩放把手：自由拖拽调整宽高 */}
       <div
         className={cn(
-          "nodrag absolute -bottom-1.5 -right-1.5 z-20 h-5 w-5 items-end justify-end",
+          "nodrag group/resize absolute right-2 z-20 h-6 w-6 items-end justify-end",
+          resizeHandleTop === undefined && "bottom-2",
           selected ? "flex" : "hidden group-hover/node:flex",
         )}
-        style={{ cursor: "nwse-resize" }}
+        style={{ cursor: "nwse-resize", touchAction: "none", top: resizeHandleTop }}
         onPointerDown={onResizeStart}
         title="拖拽自由调整节点宽高"
       >
-        <span className="block h-3 w-3 rounded-br-[4px] border-b-2 border-r-2 border-fg-mute transition-colors hover:border-fg" />
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 16 16"
+          className="pointer-events-none h-4 w-4 overflow-visible text-fg-mute transition-colors duration-150 group-hover/resize:text-fg"
+        >
+          <path d="M3 13 13 3" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+          <path d="m8 13 5-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+        </svg>
       </div>
     </div>
   );
