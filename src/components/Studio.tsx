@@ -41,12 +41,27 @@ function Canvas() {
   const loadWorkspace = useStudio((s) => s.loadWorkspace);
   const fetchSettings = useStudio((s) => s.fetchSettings);
   const saveWorkspaceNow = useStudio((s) => s.saveWorkspaceNow);
+  const tool = useStudio((s) => s.tool);
+  const setTool = useStudio((s) => s.setTool);
   const rf = useReactFlow();
 
   useEffect(() => {
     void fetchSettings();
     void loadWorkspace();
   }, [fetchSettings, loadWorkspace]);
+
+  // V = 移动工具，H = 抓手（对齐 libTV）。输入框聚焦时不抢按键。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = e.target as HTMLElement;
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) return;
+      if (e.key === "v" || e.key === "V") setTool("move");
+      if (e.key === "h" || e.key === "H") setTool("hand");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setTool]);
 
   // Flush pending save when leaving.
   useEffect(() => {
@@ -91,7 +106,11 @@ function Canvas() {
   );
 
   return (
-    <div className="h-screen w-screen" onDrop={onDrop} onDragOver={(e) => e.preventDefault()}>
+    <div
+      className={`h-screen w-screen ${tool === "hand" ? "tf-tool-hand" : "tf-tool-move"}`}
+      onDrop={onDrop}
+      onDragOver={(e) => e.preventDefault()}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -109,8 +128,8 @@ function Canvas() {
         fitView={false}
         zoomOnDoubleClick={false}
         panOnScroll
-        selectionOnDrag
-        panOnDrag={[1, 2]}
+        selectionOnDrag={tool === "move"}
+        panOnDrag={tool === "hand" ? true : [1, 2]}
         deleteKeyCode={["Delete", "Backspace"]}
         defaultViewport={{ x: 0, y: 0, zoom: 0.87 }}
         nodeDragThreshold={2}

@@ -9,12 +9,13 @@ import { AnimatePresence, motion } from "motion/react";
 
 const SHORTCUTS: { keys: string; desc: string }[] = [
   { keys: "双击画布", desc: "打开添加节点菜单" },
+  { keys: "V / H", desc: "切换 移动 / 抓手工具" },
   { keys: "拖拽 ⊕ 到另一节点", desc: "连接两个节点" },
   { keys: "Ctrl + Enter", desc: "节点内快速生成" },
   { keys: "Delete / Backspace", desc: "删除选中的节点或连线" },
   { keys: "滚轮 / 触控板", desc: "缩放画布" },
-  { keys: "空格 + 拖拽 / 右键拖拽", desc: "平移画布" },
-  { keys: "Shift + 拖拽", desc: "框选多个节点" },
+  { keys: "右键拖拽 / 抓手拖拽", desc: "平移画布" },
+  { keys: "移动工具下拖拽空白", desc: "框选多个节点" },
 ];
 
 export function Dock() {
@@ -23,6 +24,8 @@ export function Dock() {
   const openMenu = useStudio((s) => s.openMenu);
   const shortcutsOpen = useStudio((s) => s.shortcutsOpen);
   const setShortcutsOpen = useStudio((s) => s.setShortcutsOpen);
+  const tool = useStudio((s) => s.tool);
+  const setTool = useStudio((s) => s.setTool);
 
   const addAtCenter = (e: React.MouseEvent) => {
     const flowPosition = rf.screenToFlowPosition({ x: window.innerWidth / 2 - 215, y: window.innerHeight / 2 - 160 });
@@ -39,6 +42,27 @@ export function Dock() {
           className="flex h-9 w-9 items-center justify-center rounded-full bg-white/8 text-fg transition-all hover:bg-accent hover:text-ink active:scale-95"
         >
           <Icon name="Plus" size={17} weight="bold" />
+        </button>
+        <div className="mx-1 h-5 w-px bg-line" />
+        <button
+          type="button"
+          title="移动 / 框选 (V)"
+          onClick={() => setTool("move")}
+          className={`flex h-9 w-9 items-center justify-center rounded-full transition-colors ${
+            tool === "move" ? "bg-white/12 text-fg" : "text-fg-dim hover:bg-white/5 hover:text-fg"
+          }`}
+        >
+          <Icon name="ArrowsOutCardinal" size={16} weight={tool === "move" ? "bold" : "regular"} />
+        </button>
+        <button
+          type="button"
+          title="抓手平移 (H)"
+          onClick={() => setTool("hand")}
+          className={`flex h-9 w-9 items-center justify-center rounded-full transition-colors ${
+            tool === "hand" ? "bg-white/12 text-fg" : "text-fg-dim hover:bg-white/5 hover:text-fg"
+          }`}
+        >
+          <Icon name="Hand" size={16} weight={tool === "hand" ? "bold" : "regular"} />
         </button>
         <div className="mx-1 h-5 w-px bg-line" />
         <button

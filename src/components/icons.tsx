@@ -4,6 +4,7 @@
 import {
   ArrowRight,
   ArrowsClockwise,
+  ArrowsOutCardinal,
   ArrowsOutSimple,
   CaretDown,
   CaretLeft,
@@ -60,6 +61,7 @@ export interface IconProps {
 const REGISTRY: Record<string, ComponentType<IconProps>> = {
   ArrowRight,
   ArrowsClockwise,
+  ArrowsOutCardinal,
   ArrowsOutSimple,
   CaretDown,
   CaretLeft,

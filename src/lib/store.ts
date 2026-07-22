@@ -137,6 +137,8 @@ interface StudioState {
   shortcutsOpen: boolean;
   menu: MenuState | null;
   toast: Toast | null;
+  /** 画布工具：move = 移动/框选（V）；hand = 抓手平移（H）。会话级，不持久化。 */
+  tool: "move" | "hand";
 
   // graph actions
   onNodesChange: (changes: NodeChange<AppNode>[]) => void;
@@ -155,6 +157,7 @@ interface StudioState {
   setSettingsOpen: (open: boolean) => void;
   setHistoryOpen: (open: boolean) => void;
   setShortcutsOpen: (open: boolean) => void;
+  setTool: (tool: "move" | "hand") => void;
 
   // toast
   showToast: (msg: string, kind?: Toast["kind"]) => void;
@@ -196,6 +199,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   shortcutsOpen: false,
   menu: null,
   toast: null,
+  tool: "move",
 
   onNodesChange: (changes) => {
     set({ nodes: applyNodeChanges(changes, get().nodes) as AppNode[] });
@@ -300,6 +304,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setHistoryOpen: (open) => set({ historyOpen: open }),
   setShortcutsOpen: (open) => set({ shortcutsOpen: open }),
+  setTool: (tool) => set({ tool }),
 
   showToast: (msg, kind = "info") => set({ toast: { id: Date.now(), msg, kind } }),
   clearToast: () => set({ toast: null }),
