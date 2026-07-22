@@ -1,0 +1,15 @@
+# deps / build
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# local data (api key lives here — never commit)
+data/
+output/*
+!output/.gitkeep
+
+# misc
+.DS_Store
+npm-debug.log*
