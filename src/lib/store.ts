@@ -514,7 +514,8 @@ export const useStudio = create<StudioState>((set, get) => ({
       });
       const payload = (await res.json()) as { prompt?: string; error?: string };
       if (!res.ok || !payload.prompt) throw new Error(payload.error || "视觉反推失败");
-      get().updateNode(textNodeId, { text: payload.prompt, reversing: false });
+      // 反推结果为纯文本：同时清掉旧的富文本 html，编辑器按新 text 重建
+      get().updateNode(textNodeId, { text: payload.prompt, html: undefined, reversing: false });
       get().showToast("视觉反推完成", "success");
     } catch (e) {
       get().updateNode(textNodeId, { reversing: false, error: (e as Error).message });

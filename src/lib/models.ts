@@ -4,18 +4,22 @@ import type { Billing, ModelName, Quality, Resolution, VideoModel, VideoResoluti
 
 export interface ModelInfo {
   name: ModelName;
+  /** User-facing TFvision name. Keep `name` unchanged because it is also the API model key. */
+  label: string;
   resolutions: Resolution[];
   blurb: string;
-  /** Rough seconds-per-image estimate shown in the model picker. */
-  eta: string;
 }
 
 export const MODELS: ModelInfo[] = [
-  { name: "Nano Banana Pro", resolutions: ["1K", "2K", "4K"], blurb: "质量最佳 · 推荐", eta: "60s" },
-  { name: "Nano Banana 2", resolutions: ["512", "1K", "2K", "4K"], blurb: "快速批量 · 最新", eta: "25s" },
-  { name: "Nano Banana", resolutions: ["1K"], blurb: "普通质量 · 初代", eta: "20s" },
-  { name: "GPT Image 2", resolutions: ["1K", "2K", "4K"], blurb: "文字和真实感出色", eta: "50s" },
+  { name: "Nano Banana Pro", label: "TF NB Pro", resolutions: ["1K", "2K", "4K"], blurb: "质量最佳 · 推荐" },
+  { name: "Nano Banana 2", label: "TF NB 2", resolutions: ["512", "1K", "2K", "4K"], blurb: "快速批量 · 最新" },
+  { name: "Nano Banana", label: "TF NB", resolutions: ["1K"], blurb: "普通质量 · 初代" },
+  { name: "GPT Image 2", label: "TF Image 2", resolutions: ["1K", "2K", "4K"], blurb: "文字和真实感出色" },
 ];
+
+export function modelLabel(model: ModelName): string {
+  return MODELS.find((item) => item.name === model)?.label ?? model;
+}
 
 /** GPT Image 2 has no aspect_ratio param — exact pixel size for a tier+ratio
  *  comes from this table. Ratios not listed are disabled in the UI for this

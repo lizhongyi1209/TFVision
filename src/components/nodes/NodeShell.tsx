@@ -20,6 +20,10 @@ export function NodeShell({
   height,
   running,
   className,
+  toolbar,
+  showHeaderActions = true,
+  frameless = false,
+  portTop,
 }: {
   id: string;
   selected?: boolean;
@@ -31,6 +35,14 @@ export function NodeShell({
   height?: number;
   running?: boolean;
   className?: string;
+  /** 浮在节点上方的工具条（如文本节点的格式栏），随节点移动。 */
+  toolbar?: ReactNode;
+  /** 是否显示标题栏右侧的复制、删除按钮。 */
+  showHeaderActions?: boolean;
+  /** 由节点自身绘制独立面板，而非使用统一卡片外框。 */
+  frameless?: boolean;
+  /** 连线端口相对节点顶部的位置；适合预览区与编辑区分离的节点。 */
+  portTop?: number | string;
 }) {
   const removeNode = useStudio((s) => s.removeNode);
   const duplicateNode = useStudio((s) => s.duplicateNode);
@@ -80,6 +92,13 @@ export function NodeShell({
 
   return (
     <div ref={wrapRef} className={cn("tf-node-wrap group/node relative", selected && "selected")} style={{ width }}>
+      {/* 浮动工具条 — 节点上方居中，内联跟随节点（不拦截画布拖动） */}
+      {toolbar ? (
+        <div className="nodrag absolute -top-[68px] left-1/2 z-30 -translate-x-1/2" onMouseDown={(e) => e.stopPropagation()}>
+          {toolbar}
+        </div>
+      ) : null}
+
       {/* 标题行 = 拖动把手（不拦截 mousedown）；双击改名 */}
       <div className="absolute -top-7 left-0 flex w-full items-center gap-1.5 text-[12px] text-fg-dim">
         <Icon name={icon} size={13} className="pointer-events-none shrink-0" />
@@ -104,38 +123,42 @@ export function NodeShell({
             {label}
           </span>
         )}
-        <span className="nodrag flex items-center gap-0.5 opacity-0 transition-opacity group-hover/node:opacity-100">
-          <button
-            type="button"
-            title="复制节点"
-            onClick={(e) => {
-              e.stopPropagation();
-              duplicateNode(id);
-            }}
-            className="rounded p-1 text-fg-mute hover:bg-white/10 hover:text-fg"
-          >
-            <Icon name="Copy" size={12} />
-          </button>
-          <button
-            type="button"
-            title="删除节点"
-            onClick={(e) => {
-              e.stopPropagation();
-              removeNode(id);
-            }}
-            className="rounded p-1 text-fg-mute hover:bg-white/10 hover:text-danger"
-          >
-            <Icon name="Trash" size={12} />
-          </button>
-        </span>
+        {showHeaderActions ? (
+          <span className="nodrag flex items-center gap-0.5 opacity-0 transition-opacity group-hover/node:opacity-100">
+            <button
+              type="button"
+              title="复制节点"
+              onClick={(e) => {
+                e.stopPropagation();
+                duplicateNode(id);
+              }}
+              className="rounded p-1 text-fg-mute hover:bg-white/10 hover:text-fg"
+            >
+              <Icon name="Copy" size={12} />
+            </button>
+            <button
+              type="button"
+              title="删除节点"
+              onClick={(e) => {
+                e.stopPropagation();
+                removeNode(id);
+              }}
+              className="rounded p-1 text-fg-mute hover:bg-white/10 hover:text-danger"
+            >
+              <Icon name="Trash" size={12} />
+            </button>
+          </span>
+        ) : null}
       </div>
 
       {/* Card */}
       <div
         className={cn(
-          "relative overflow-hidden rounded-panel border bg-card transition-all duration-200",
-          selected ? "border-line-2 shadow-[0_0_0_1px_rgba(255,255,255,0.28),0_24px_60px_rgba(0,0,0,0.5)]" : "border-line hover:border-line-2",
-          running && "border-white/25",
+          frameless
+            ? "relative"
+            : "relative overflow-hidden rounded-panel border bg-card transition-all duration-200",
+          !frameless && (selected ? "border-white/30 shadow-[0_18px_50px_rgba(0,0,0,0.45)]" : "border-line hover:border-line-2"),
+          !frameless && running && "border-white/25",
           className,
         )}
       >
@@ -143,10 +166,10 @@ export function NodeShell({
       </div>
 
       {/* Ports — ⊕ on both flanks, revealed on hover (libTV interaction) */}
-      <Handle type="target" position={Position.Left} className="tf-port" style={{ left: -30 }} onClick={openPortMenu("in")}>
+      <Handle type="target" position={Position.Left} className="tf-port" style={{ left: -30, top: portTop }} onClick={openPortMenu("in")}>
         <Icon name="Plus" size={12} className="pointer-events-none" />
       </Handle>
-      <Handle type="source" position={Position.Right} className="tf-port" style={{ right: -30 }} onClick={openPortMenu("out")}>
+      <Handle type="source" position={Position.Right} className="tf-port" style={{ right: -30, top: portTop }} onClick={openPortMenu("out")}>
         <Icon name="Plus" size={12} className="pointer-events-none" />
       </Handle>
 

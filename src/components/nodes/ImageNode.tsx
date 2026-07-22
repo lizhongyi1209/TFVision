@@ -4,7 +4,7 @@
 // image / upload preview; a composer docked under the card carries prompt,
 // model picker, 比例·画质·张数 popover, style preset, and submit (libTV-style).
 
-import { memo, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { AppNode } from "@/lib/store";
 import { useStudio } from "@/lib/store";
@@ -16,6 +16,7 @@ import {
   QUALITY_OPTIONS,
   STYLE_PRESETS,
   comboError,
+  modelLabel,
   resolutionsFor,
 } from "@/lib/models";
 import { cn, downloadUrl, fileToDataURL, progressStageLabel } from "@/lib/utils";
@@ -31,7 +32,7 @@ function ParamPopover({ data, nodeId, onClose }: { data: ImageNodeData; nodeId: 
 
   return (
     <div
-      className="glass absolute bottom-full left-0 z-30 mb-2 w-[340px] rounded-panel p-4"
+      className="glass popover-enter absolute bottom-full left-0 z-30 mb-2 w-[340px] origin-bottom-left rounded-panel p-4"
       onMouseDown={(e) => e.stopPropagation()}
     >
       <div className="mb-2 flex items-center justify-between">
@@ -121,7 +122,7 @@ function ModelPopover({ data, nodeId, onClose }: { data: ImageNodeData; nodeId: 
   const updateNode = useStudio((s) => s.updateNode);
   return (
     <div
-      className="glass absolute bottom-full left-0 z-30 mb-2 w-[300px] rounded-panel p-2"
+      className="glass popover-enter absolute bottom-full left-0 z-30 mb-2 w-[300px] origin-bottom-left rounded-panel p-2"
       onMouseDown={(e) => e.stopPropagation()}
     >
       {MODELS.map((m) => (
@@ -136,15 +137,14 @@ function ModelPopover({ data, nodeId, onClose }: { data: ImageNodeData; nodeId: 
             onClose();
           }}
           className={cn(
-            "flex w-full items-center justify-between gap-2 rounded-control px-3 py-2.5 text-left transition-colors",
+            "group/model flex w-full flex-col items-start rounded-control px-3 py-2.5 text-left transition-colors",
             data.model === m.name ? "bg-accent/10 text-accent" : "text-fg hover:bg-white/5",
           )}
         >
-          <span className="flex flex-col">
-            <span className="text-[13px] font-medium">{m.name}</span>
-            <span className="text-[11px] text-fg-mute">{m.blurb}</span>
+          <span className="text-[13px] font-medium">{m.label}</span>
+          <span className="model-option__blurb grid text-[11px] text-fg-mute">
+            <span className="overflow-hidden">{m.blurb}</span>
           </span>
-          <span className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-fg-mute">{m.eta}</span>
         </button>
       ))}
     </div>
@@ -155,7 +155,7 @@ function StylePopover({ data, nodeId, onClose }: { data: ImageNodeData; nodeId: 
   const updateNode = useStudio((s) => s.updateNode);
   return (
     <div
-      className="glass absolute bottom-full right-0 z-30 mb-2 w-[260px] rounded-panel p-2"
+      className="glass popover-enter absolute bottom-full left-0 z-30 mb-2 w-[260px] origin-bottom-left rounded-panel p-2"
       onMouseDown={(e) => e.stopPropagation()}
     >
       <div className="px-2 pb-1 pt-1 text-[11px] font-medium text-fg-mute">风格预设 · TFvision</div>
@@ -187,7 +187,31 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
   const edges = useStudio((s) => s.edges);
   const nodes = useStudio((s) => s.nodes);
   const fileRef = useRef<HTMLInputElement>(null);
+  const modelAreaRef = useRef<HTMLDivElement>(null);
+  const paramAreaRef = useRef<HTMLDivElement>(null);
+  const styleAreaRef = useRef<HTMLDivElement>(null);
   const [popover, setPopover] = useState<"none" | "params" | "model" | "style">("none");
+
+  useEffect(() => {
+    if (popover === "none") return;
+
+    const activeArea =
+      popover === "model" ? modelAreaRef.current : popover === "params" ? paramAreaRef.current : styleAreaRef.current;
+    const onPointerDown = (event: MouseEvent) => {
+      if (activeArea?.contains(event.target as Node)) return;
+      setPopover("none");
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPopover("none");
+    };
+
+    document.addEventListener("mousedown", onPointerDown, true);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [popover]);
 
   const running = d.status === "running";
   const refCount = edges.filter((e) => {
@@ -210,14 +234,24 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
   };
 
   return (
-    <NodeShell id={id} selected={selected} label={d.label} icon="Image" width={d.width || 430} height={d.height} running={running}>
+    <NodeShell
+      id={id}
+      selected={selected}
+      label={d.label}
+      icon="Image"
+      width={d.width || 470}
+      height={d.height}
+      running={running}
+      frameless
+      portTop={d.height ? d.height / 2 : 132}
+    >
       {/* ── Canvas area ── */}
       <div
         data-body
         style={d.height ? { height: d.height } : undefined}
         className={cn(
-          "relative flex items-center justify-center overflow-hidden bg-panel",
-          !d.height && "min-h-[240px]",
+          "relative flex min-h-[264px] items-center justify-center overflow-hidden rounded-[12px] border bg-panel transition-colors",
+          selected ? "border-white/30 shadow-[0_18px_50px_rgba(0,0,0,0.3)]" : "border-line hover:border-line-2",
         )}
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
@@ -234,7 +268,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
           />
         ) : (
           <div className="flex flex-col gap-2 px-8 py-10 text-[12px] text-fg-mute">
-            <Icon name="Image" size={30} className="mb-1 self-center text-fg-mute/60" />
+            <Icon name="Image" size={34} className="mb-3 self-center text-fg-mute/60" />
             <span className="mb-1 self-center">尝试：</span>
             <button
               type="button"
@@ -323,20 +357,22 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
       </div>
 
       {/* ── Composer ── */}
-      <div className="relative border-t border-line bg-card p-2.5 nodrag" onMouseDown={(e) => e.stopPropagation()}>
-        {popover === "params" ? <ParamPopover data={d} nodeId={id} onClose={() => setPopover("none")} /> : null}
-        {popover === "model" ? <ModelPopover data={d} nodeId={id} onClose={() => setPopover("none")} /> : null}
-        {popover === "style" ? <StylePopover data={d} nodeId={id} onClose={() => setPopover("none")} /> : null}
-
-        <div className="mb-2 flex items-center gap-1.5">
+      <div
+        className="relative left-1/2 mt-3 w-[calc(100%+192px)] -translate-x-1/2 rounded-[18px] border border-line bg-card p-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.24)] nodrag"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="mb-3 flex items-center gap-1.5">
           <Chip title="来自连线的参考图数量">
             <Icon name="Paperclip" size={11} />
             参考 {refCount + (d.url ? 1 : 0)}
           </Chip>
-          <Chip active={d.styleId !== "none"} onClick={() => setPopover(popover === "style" ? "none" : "style")} title="风格预设">
-            <Icon name="Palette" size={11} />
-            {styleLabel}
-          </Chip>
+          <div ref={styleAreaRef} className="relative">
+            {popover === "style" ? <StylePopover data={d} nodeId={id} onClose={() => setPopover("none")} /> : null}
+            <Chip active={d.styleId !== "none"} onClick={() => setPopover(popover === "style" ? "none" : "style")} title="风格预设">
+              <Icon name="Palette" size={11} />
+              {styleLabel}
+            </Chip>
+          </div>
         </div>
 
         <textarea
@@ -349,30 +385,36 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
             }
           }}
           placeholder="可直接文字生图，或上传/连入图片后输入指令进行编辑，如：将背景改为雪夜"
-          rows={2}
-          className="mb-2 w-full resize-none border-none bg-transparent text-[13px] leading-relaxed text-fg outline-none placeholder:text-fg-mute"
+          rows={3}
+          className="mb-3 w-full resize-none border-none bg-transparent text-[13px] leading-relaxed text-fg outline-none placeholder:text-fg-mute"
           spellCheck={false}
         />
 
         <div className="flex items-center justify-between gap-1">
           <div className="flex min-w-0 items-center gap-1">
-            <button
-              type="button"
-              onClick={() => setPopover(popover === "model" ? "none" : "model")}
-              className="flex h-7 shrink-0 items-center gap-1 rounded-full border border-line bg-white/[0.03] px-2.5 text-[11px] text-fg-dim transition-colors hover:border-line-2 hover:text-fg"
-            >
-              <Icon name="Cube" size={11} />
-              {d.model}
-              <Icon name="CaretDown" size={9} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setPopover(popover === "params" ? "none" : "params")}
-              className="flex h-7 min-w-0 items-center gap-1 truncate rounded-full border border-line bg-white/[0.03] px-2.5 text-[11px] text-fg-dim transition-colors hover:border-line-2 hover:text-fg"
-            >
-              {d.aspectRatio === "auto" ? "智能" : d.aspectRatio} · {d.resolution} · {d.count}张
-              <Icon name="CaretDown" size={9} />
-            </button>
+            <div ref={modelAreaRef} className="relative shrink-0">
+              {popover === "model" ? <ModelPopover data={d} nodeId={id} onClose={() => setPopover("none")} /> : null}
+              <button
+                type="button"
+                onClick={() => setPopover(popover === "model" ? "none" : "model")}
+                className="flex h-8 items-center gap-1 rounded-full border border-line bg-panel-2/95 px-3 text-[11px] text-fg-dim transition-colors hover:border-line-2 hover:text-fg"
+              >
+                <Icon name="Cube" size={11} />
+                {modelLabel(d.model)}
+                <Icon name="CaretDown" size={9} />
+              </button>
+            </div>
+            <div ref={paramAreaRef} className="relative min-w-0">
+              {popover === "params" ? <ParamPopover data={d} nodeId={id} onClose={() => setPopover("none")} /> : null}
+              <button
+                type="button"
+                onClick={() => setPopover(popover === "params" ? "none" : "params")}
+                className="flex h-8 min-w-0 items-center gap-1 truncate rounded-full border border-line bg-panel-2/95 px-3 text-[11px] text-fg-dim transition-colors hover:border-line-2 hover:text-fg"
+              >
+                {d.aspectRatio === "auto" ? "智能" : d.aspectRatio} · {d.resolution} · {d.count}张
+                <Icon name="CaretDown" size={9} />
+              </button>
+            </div>
           </div>
           <button
             type="button"
@@ -380,7 +422,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
             disabled={running || !!combo}
             onClick={() => void generateImage(id)}
             className={cn(
-              "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-all active:scale-95",
+              "flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-all active:scale-95",
               running || combo
                 ? "bg-white/10 text-fg-mute"
                 : "bg-accent text-ink shadow-[0_6px_20px_-6px_rgba(255,255,255,0.4)] hover:bg-accent-2",

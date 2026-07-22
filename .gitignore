@@ -11,5 +11,6 @@ output/*
 !output/.gitkeep
 
 # misc
+.claude/
 .DS_Store
 npm-debug.log*

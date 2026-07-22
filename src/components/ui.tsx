@@ -146,7 +146,7 @@ export function Chip({
         "inline-flex h-7 shrink-0 select-none items-center gap-1 rounded-full border px-2.5 text-[11px] transition-all",
         active
           ? "border-accent/60 bg-accent/15 text-accent"
-          : "border-line bg-white/[0.03] text-fg-dim hover:border-line-2 hover:text-fg",
+          : "border-line bg-panel-2/95 text-fg-dim hover:border-line-2 hover:text-fg",
         className,
       )}
     >

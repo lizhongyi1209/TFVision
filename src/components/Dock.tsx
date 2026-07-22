@@ -30,13 +30,22 @@ export function Dock() {
   const setTool = useStudio((s) => s.setTool);
 
   const addAtCenter = (e: React.MouseEvent) => {
+    const buttonRect = e.currentTarget.getBoundingClientRect();
     const flowPosition = rf.screenToFlowPosition({ x: window.innerWidth / 2 - 215, y: window.innerHeight / 2 - 160 });
-    openMenu({ flowPosition, screen: { x: e.clientX - 116, y: Math.max(80, e.clientY - 380) } });
+    // The menu is ~242px tall. Anchor it to the button itself, rather than the
+    // pointer, so it consistently sits just above the dock (12px gap).
+    openMenu({
+      flowPosition,
+      screen: {
+        x: buttonRect.left + buttonRect.width / 2 - 116,
+        y: Math.max(16, buttonRect.top - 254),
+      },
+    });
   };
 
   return (
     <>
-      <div className="pointer-events-auto absolute bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1 rounded-full border border-line bg-panel/85 px-2 py-1.5 backdrop-blur">
+      <div className="pointer-events-auto absolute bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1 rounded-full border border-line bg-panel/95 px-2 py-1.5 backdrop-blur-xl">
         <button
           type="button"
           title="添加节点"

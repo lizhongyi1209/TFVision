@@ -24,7 +24,7 @@ function BoardSwitcher() {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex h-9 items-center gap-1.5 rounded-control border border-line bg-panel/80 px-3 text-[13px] text-fg backdrop-blur transition-colors hover:border-line-2"
+        className="flex h-9 items-center gap-1.5 rounded-control border border-line bg-panel/95 px-3 text-[13px] text-fg backdrop-blur-xl transition-colors hover:border-line-2"
       >
         {active?.name ?? "画布"}
         <Icon name="CaretDown" size={11} className="text-fg-mute" />
@@ -109,7 +109,7 @@ export function TopBar() {
     <>
       {/* Left cluster */}
       <div className="pointer-events-auto absolute left-4 top-4 z-50 flex items-center gap-2">
-        <div className="flex h-9 items-center gap-2 rounded-control border border-line bg-panel/80 px-3 backdrop-blur">
+        <div className="flex h-9 items-center gap-2 rounded-control border border-line bg-panel/95 px-3 backdrop-blur-xl">
           <span className="flex h-5 w-5 items-center justify-center rounded-md bg-accent/90 text-[11px] font-bold text-ink">
             TF
           </span>
@@ -128,7 +128,7 @@ export function TopBar() {
         <button
           type="button"
           onClick={() => setHistoryOpen(true)}
-          className="flex h-9 items-center gap-1.5 rounded-control border border-line bg-panel/80 px-3 text-[13px] text-fg-dim backdrop-blur transition-colors hover:border-line-2 hover:text-fg"
+          className="flex h-9 items-center gap-1.5 rounded-control border border-line bg-panel/95 px-3 text-[13px] text-fg-dim backdrop-blur-xl transition-colors hover:border-line-2 hover:text-fg"
         >
           <Icon name="ClockCounterClockwise" size={14} />
           历史资产
@@ -140,7 +140,7 @@ export function TopBar() {
             "flex h-9 items-center gap-1.5 rounded-control border px-3 text-[13px] backdrop-blur transition-colors",
             settings && !settings.hasApiKey
               ? "border-accent/60 bg-accent/15 text-accent"
-              : "border-line bg-panel/80 text-fg-dim hover:border-line-2 hover:text-fg",
+              : "border-line bg-panel/95 text-fg-dim backdrop-blur-xl hover:border-line-2 hover:text-fg",
           )}
         >
           <Icon name="Gear" size={14} />

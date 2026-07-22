@@ -109,6 +109,8 @@ export type NodeStatus = "idle" | "running" | "success" | "failed";
 export type TextNodeData = {
   label: string;
   text: string;
+  /** 富文本 HTML（内联编辑器的源）；text 始终保存对应的纯文本，供下游取提示词。 */
+  html?: string;
   reversing: boolean;
   error?: string;
   /** 节点卡片宽度（右下角把手拖拽调整），高度随内容自适应。 */
