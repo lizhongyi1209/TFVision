@@ -130,6 +130,7 @@ function Canvas() {
         panOnScroll
         selectionOnDrag={tool === "move"}
         panOnDrag={tool === "hand" ? true : [1, 2]}
+        nodesDraggable={tool === "move"}
         deleteKeyCode={["Delete", "Backspace"]}
         defaultViewport={{ x: 0, y: 0, zoom: 0.87 }}
         nodeDragThreshold={2}

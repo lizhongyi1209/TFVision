@@ -52,6 +52,22 @@ export function NodeShell({
     });
   };
 
+  // 拖拽右下角调整节点宽度（高度随内容自适应）。写入 data.width 持久化。
+  const onResizeStart = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startW = width;
+    const zoom = rf.getZoom() || 1;
+    const onMove = (ev: PointerEvent) => {
+      const w = Math.round(Math.max(300, Math.min(860, startW + (ev.clientX - startX) / zoom)));
+      updateNode(id, { width: w });
+    };
+    const onUp = () => window.removeEventListener("pointermove", onMove);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  };
+
   return (
     <div className={cn("tf-node-wrap group/node relative", selected && "selected")} style={{ width }}>
       {/* Floating label (libTV puts it above the card, outside the frame) */}
@@ -109,6 +125,18 @@ export function NodeShell({
       <Handle type="source" position={Position.Right} className="tf-port" style={{ right: -30 }} onClick={openPortMenu("out")}>
         <Icon name="Plus" size={12} className="pointer-events-none" />
       </Handle>
+
+      {/* 右下角缩放把手：拖拽调整节点宽度 */}
+      <div
+        className={cn(
+          "nodrag absolute -bottom-1.5 -right-1.5 z-20 h-5 w-5 cursor-nwse-resize items-end justify-end",
+          selected ? "flex" : "hidden group-hover/node:flex",
+        )}
+        onPointerDown={onResizeStart}
+        title="拖拽调整节点大小"
+      >
+        <span className="block h-3 w-3 rounded-br-[4px] border-b-2 border-r-2 border-fg-mute transition-colors hover:border-fg" />
+      </div>
     </div>
   );
 }

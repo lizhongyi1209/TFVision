@@ -10,6 +10,7 @@ import { AnimatePresence, motion } from "motion/react";
 const SHORTCUTS: { keys: string; desc: string }[] = [
   { keys: "双击画布", desc: "打开添加节点菜单" },
   { keys: "V / H", desc: "切换 移动 / 抓手工具" },
+  { keys: "拖节点右下角 ⌟", desc: "调整节点大小" },
   { keys: "拖拽 ⊕ 到另一节点", desc: "连接两个节点" },
   { keys: "Ctrl + Enter", desc: "节点内快速生成" },
   { keys: "Delete / Backspace", desc: "删除选中的节点或连线" },
@@ -52,7 +53,7 @@ export function Dock() {
             tool === "move" ? "bg-white/12 text-fg" : "text-fg-dim hover:bg-white/5 hover:text-fg"
           }`}
         >
-          <Icon name="ArrowsOutCardinal" size={16} weight={tool === "move" ? "bold" : "regular"} />
+          <Icon name="Cursor" size={16} weight={tool === "move" ? "bold" : "regular"} />
         </button>
         <button
           type="button"

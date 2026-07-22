@@ -88,7 +88,7 @@ export const VideoNode = memo(function VideoNode({ id, selected, data }: NodePro
   const modelInfo = VIDEO_MODELS.find((m) => m.value === d.model);
 
   return (
-    <NodeShell id={id} selected={selected} label={d.label} icon="FilmSlate" width={430} running={running}>
+    <NodeShell id={id} selected={selected} label={d.label} icon="FilmSlate" width={d.width || 430} running={running}>
       <div className="relative flex min-h-[240px] items-center justify-center bg-panel">
         {d.url ? (
           <video src={d.url} controls loop className="max-h-[420px] w-full" />

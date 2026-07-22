@@ -210,7 +210,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
   };
 
   return (
-    <NodeShell id={id} selected={selected} label={d.label} icon="Image" width={430} running={running}>
+    <NodeShell id={id} selected={selected} label={d.label} icon="Image" width={d.width || 430} running={running}>
       {/* ── Canvas area ── */}
       <div
         className="relative flex min-h-[240px] items-center justify-center bg-panel"

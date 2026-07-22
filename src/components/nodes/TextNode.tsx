@@ -26,7 +26,7 @@ export const TextNode = memo(function TextNode({ id, selected, data }: NodeProps
   });
 
   return (
-    <NodeShell id={id} selected={selected} label={d.label} icon="TextT" width={380}>
+    <NodeShell id={id} selected={selected} label={d.label} icon="TextT" width={d.width || 380}>
       <div className="bg-panel p-3">
         {d.text || d.reversing ? null : (
           <div className="pointer-events-none absolute inset-x-3 top-3 flex flex-col gap-1.5 text-[12px] text-fg-mute">

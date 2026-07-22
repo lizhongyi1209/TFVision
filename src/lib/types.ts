@@ -111,6 +111,8 @@ export type TextNodeData = {
   text: string;
   reversing: boolean;
   error?: string;
+  /** 节点卡片宽度（右下角把手拖拽调整），高度随内容自适应。 */
+  width?: number;
   [key: string]: unknown;
 };
 
@@ -132,6 +134,7 @@ export type ImageNodeData = {
   billing: Billing;
   quality: Quality;
   count: number;
+  width?: number;
   [key: string]: unknown;
 };
 
@@ -151,6 +154,7 @@ export type VideoNodeData = {
   aspectRatio: VideoAspectRatio;
   sound: boolean;
   cameraFixed: boolean;
+  width?: number;
   [key: string]: unknown;
 };
 
