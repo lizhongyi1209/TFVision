@@ -88,10 +88,17 @@ export const VideoNode = memo(function VideoNode({ id, selected, data }: NodePro
   const modelInfo = VIDEO_MODELS.find((m) => m.value === d.model);
 
   return (
-    <NodeShell id={id} selected={selected} label={d.label} icon="FilmSlate" width={d.width || 430} running={running}>
-      <div className="relative flex min-h-[240px] items-center justify-center bg-panel">
+    <NodeShell id={id} selected={selected} label={d.label} icon="FilmSlate" width={d.width || 430} height={d.height} running={running}>
+      <div
+        data-body
+        style={d.height ? { height: d.height } : undefined}
+        className={cn(
+          "relative flex items-center justify-center overflow-hidden bg-panel",
+          !d.height && "min-h-[240px]",
+        )}
+      >
         {d.url ? (
-          <video src={d.url} controls loop className="max-h-[420px] w-full" />
+          <video src={d.url} controls loop className={cn(d.height ? "h-full w-full" : "max-h-[420px] w-full")} />
         ) : (
           <div className="flex flex-col gap-2 px-8 py-10 text-center text-[12px] text-fg-mute">
             <Icon name="FilmSlate" size={30} className="mb-1 self-center text-fg-mute/60" />

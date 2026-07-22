@@ -211,3 +211,12 @@ input {
 .react-flow__node {
   font-family: var(--font-sans);
 }
+
+/* 光标诚实化：节点可拖区域显示 grab（xyflow 默认），但 nodrag 区域（生成栏等）
+   恢复常规箭头，按钮显示手型 —— 光标样式与真实可拖性一致。 */
+.react-flow__node .nodrag {
+  cursor: auto;
+}
+.react-flow__node button {
+  cursor: pointer;
+}

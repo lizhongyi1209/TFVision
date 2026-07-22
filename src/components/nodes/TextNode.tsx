@@ -8,6 +8,7 @@ import type { NodeProps } from "@xyflow/react";
 import type { AppNode } from "@/lib/store";
 import { useStudio } from "@/lib/store";
 import type { ImageNodeData, TextNodeData } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import { Icon } from "../icons";
 import { NodeShell } from "./NodeShell";
 import { Spinner } from "../ui";
@@ -26,8 +27,8 @@ export const TextNode = memo(function TextNode({ id, selected, data }: NodeProps
   });
 
   return (
-    <NodeShell id={id} selected={selected} label={d.label} icon="TextT" width={d.width || 380}>
-      <div className="bg-panel p-3">
+    <NodeShell id={id} selected={selected} label={d.label} icon="TextT" width={d.width || 380} height={d.height}>
+      <div data-body style={d.height ? { height: d.height } : undefined} className="relative bg-panel p-3">
         {d.text || d.reversing ? null : (
           <div className="pointer-events-none absolute inset-x-3 top-3 flex flex-col gap-1.5 text-[12px] text-fg-mute">
             <span>写下你想要的画面、场景或指令。例如：</span>
@@ -37,8 +38,11 @@ export const TextNode = memo(function TextNode({ id, selected, data }: NodeProps
         <textarea
           value={d.text}
           onChange={(e) => updateNode(id, { text: e.target.value })}
-          rows={7}
-          className="nodrag w-full resize-none border-none bg-transparent text-[13px] leading-relaxed text-fg outline-none"
+          rows={d.height ? undefined : 7}
+          className={cn(
+            "nodrag w-full resize-none border-none bg-transparent text-[13px] leading-relaxed text-fg outline-none",
+            d.height && "h-full",
+          )}
           onMouseDown={(e) => e.stopPropagation()}
           spellCheck={false}
         />

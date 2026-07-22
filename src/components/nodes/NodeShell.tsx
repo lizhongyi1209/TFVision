@@ -1,14 +1,14 @@
 "use client";
 
-// Shared chrome for all canvas nodes: floating label above the card, the card
-// frame, left/right ⊕ ports (libTV-style), and hover actions.
+// Shared chrome for all canvas nodes: floating label above the card (doubles
+// as the drag handle; double-click to rename), the card frame, left/right ⊕
+// ports (libTV-style), hover actions, and a free-resize grip (width + height).
 
-import { Handle, Position } from "@xyflow/react";
-import type { ReactNode } from "react";
+import { Handle, Position, useReactFlow } from "@xyflow/react";
+import { useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { Icon } from "../icons";
 import { useStudio } from "@/lib/store";
-import { useReactFlow } from "@xyflow/react";
 
 export function NodeShell({
   id,
@@ -17,6 +17,7 @@ export function NodeShell({
   icon,
   children,
   width = 420,
+  height,
   running,
   className,
 }: {
@@ -26,6 +27,8 @@ export function NodeShell({
   icon: string;
   children: ReactNode;
   width?: number;
+  /** 内容区（[data-body]）的显式高度；未设置时随内容自适应。 */
+  height?: number;
   running?: boolean;
   className?: string;
 }) {
@@ -34,6 +37,8 @@ export function NodeShell({
   const openMenu = useStudio((s) => s.openMenu);
   const updateNode = useStudio((s) => s.updateNode);
   const rf = useReactFlow();
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [editing, setEditing] = useState(false);
 
   const openPortMenu = (side: "in" | "out") => (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -52,16 +57,21 @@ export function NodeShell({
     });
   };
 
-  // 拖拽右下角调整节点宽度（高度随内容自适应）。写入 data.width 持久化。
+  // 右下角把手：自由调整宽高。宽度写 data.width，高度写 data.height（作用于
+  // [data-body] 内容区，未设置时以当前实际高度为起点）。
   const onResizeStart = (e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const startX = e.clientX;
-    const startW = width;
     const zoom = rf.getZoom() || 1;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startW = width;
+    const bodyEl = wrapRef.current?.querySelector<HTMLElement>("[data-body]");
+    const startH = height ?? (bodyEl ? bodyEl.getBoundingClientRect().height / zoom : 240);
     const onMove = (ev: PointerEvent) => {
-      const w = Math.round(Math.max(300, Math.min(860, startW + (ev.clientX - startX) / zoom)));
-      updateNode(id, { width: w });
+      const w = Math.round(Math.max(300, Math.min(920, startW + (ev.clientX - startX) / zoom)));
+      const h = Math.round(Math.max(150, Math.min(1000, startH + (ev.clientY - startY) / zoom)));
+      updateNode(id, { width: w, height: h });
     };
     const onUp = () => window.removeEventListener("pointermove", onMove);
     window.addEventListener("pointermove", onMove);
@@ -69,18 +79,32 @@ export function NodeShell({
   };
 
   return (
-    <div className={cn("tf-node-wrap group/node relative", selected && "selected")} style={{ width }}>
-      {/* Floating label (libTV puts it above the card, outside the frame) */}
-      <div className="pointer-events-none absolute -top-7 left-0 flex w-full items-center gap-1.5 text-[12px] text-fg-dim">
-        <Icon name={icon} size={13} className="shrink-0" />
-        <input
-          className="pointer-events-auto w-0 flex-1 truncate border-none bg-transparent text-[12px] text-fg-dim outline-none transition-colors focus:text-fg"
-          value={label}
-          onChange={(e) => updateNode(id, { label: e.target.value })}
-          onMouseDown={(e) => e.stopPropagation()}
-          spellCheck={false}
-        />
-        <span className="pointer-events-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover/node:opacity-100">
+    <div ref={wrapRef} className={cn("tf-node-wrap group/node relative", selected && "selected")} style={{ width }}>
+      {/* 标题行 = 拖动把手（不拦截 mousedown）；双击改名 */}
+      <div className="absolute -top-7 left-0 flex w-full items-center gap-1.5 text-[12px] text-fg-dim">
+        <Icon name={icon} size={13} className="pointer-events-none shrink-0" />
+        {editing ? (
+          <input
+            autoFocus
+            defaultValue={label}
+            className="nodrag w-0 flex-1 truncate border-none bg-transparent text-[12px] text-fg outline-none"
+            onMouseDown={(e) => e.stopPropagation()}
+            onBlur={(e) => {
+              updateNode(id, { label: e.target.value.trim() || label });
+              setEditing(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              if (e.key === "Escape") setEditing(false);
+            }}
+            spellCheck={false}
+          />
+        ) : (
+          <span className="w-0 flex-1 truncate" onDoubleClick={() => setEditing(true)} title="拖动移动节点 · 双击重命名">
+            {label}
+          </span>
+        )}
+        <span className="nodrag flex items-center gap-0.5 opacity-0 transition-opacity group-hover/node:opacity-100">
           <button
             type="button"
             title="复制节点"
@@ -126,14 +150,15 @@ export function NodeShell({
         <Icon name="Plus" size={12} className="pointer-events-none" />
       </Handle>
 
-      {/* 右下角缩放把手：拖拽调整节点宽度 */}
+      {/* 右下角缩放把手：自由拖拽调整宽高 */}
       <div
         className={cn(
-          "nodrag absolute -bottom-1.5 -right-1.5 z-20 h-5 w-5 cursor-nwse-resize items-end justify-end",
+          "nodrag absolute -bottom-1.5 -right-1.5 z-20 h-5 w-5 items-end justify-end",
           selected ? "flex" : "hidden group-hover/node:flex",
         )}
+        style={{ cursor: "nwse-resize" }}
         onPointerDown={onResizeStart}
-        title="拖拽调整节点大小"
+        title="拖拽自由调整节点宽高"
       >
         <span className="block h-3 w-3 rounded-br-[4px] border-b-2 border-r-2 border-fg-mute transition-colors hover:border-fg" />
       </div>

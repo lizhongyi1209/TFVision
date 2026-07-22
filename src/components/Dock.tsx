@@ -10,7 +10,8 @@ import { AnimatePresence, motion } from "motion/react";
 const SHORTCUTS: { keys: string; desc: string }[] = [
   { keys: "双击画布", desc: "打开添加节点菜单" },
   { keys: "V / H", desc: "切换 移动 / 抓手工具" },
-  { keys: "拖节点右下角 ⌟", desc: "调整节点大小" },
+  { keys: "拖节点右下角 ⌟", desc: "自由调整节点宽高" },
+  { keys: "拖节点标题 / 图片区", desc: "移动节点 · 双击标题重命名" },
   { keys: "拖拽 ⊕ 到另一节点", desc: "连接两个节点" },
   { keys: "Ctrl + Enter", desc: "节点内快速生成" },
   { keys: "Delete / Backspace", desc: "删除选中的节点或连线" },

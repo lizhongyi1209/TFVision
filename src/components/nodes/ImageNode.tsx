@@ -210,10 +210,15 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
   };
 
   return (
-    <NodeShell id={id} selected={selected} label={d.label} icon="Image" width={d.width || 430} running={running}>
+    <NodeShell id={id} selected={selected} label={d.label} icon="Image" width={d.width || 430} height={d.height} running={running}>
       {/* ── Canvas area ── */}
       <div
-        className="relative flex min-h-[240px] items-center justify-center bg-panel"
+        data-body
+        style={d.height ? { height: d.height } : undefined}
+        className={cn(
+          "relative flex items-center justify-center overflow-hidden bg-panel",
+          !d.height && "min-h-[240px]",
+        )}
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault();
@@ -221,7 +226,12 @@ export const ImageNode = memo(function ImageNode({ id, selected, data }: NodePro
         }}
       >
         {d.url ? (
-          <img src={d.url} alt="" className="max-h-[420px] w-full object-contain" draggable={false} />
+          <img
+            src={d.url}
+            alt=""
+            className={cn("object-contain", d.height ? "h-full w-full" : "max-h-[420px] w-full")}
+            draggable={false}
+          />
         ) : (
           <div className="flex flex-col gap-2 px-8 py-10 text-[12px] text-fg-mute">
             <Icon name="Image" size={30} className="mb-1 self-center text-fg-mute/60" />
