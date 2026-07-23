@@ -30,7 +30,7 @@ export async function POST(req: Request) {
   const resolution = String(body.resolution ?? s.defaults.resolution);
   const aspectRatio = String(body.aspectRatio ?? s.defaults.aspectRatio);
   const billing = String(body.billing ?? s.defaults.billing);
-  const count = Math.max(1, Math.min(4, Number(body.count) || 1));
+  const count = Math.max(1, Math.min(9, Number(body.count) || 1));
   const quality = String(body.quality ?? "auto");
   // images[]: 参考图（节点连线注入 + 手动上传），顺序即提示词中「第 N 张图」的顺序。
   const images = Array.isArray(body.images)

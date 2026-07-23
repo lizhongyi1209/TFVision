@@ -2,7 +2,7 @@
 
 // 顶栏（对齐 libTV 布局）：左 = Logo + 工作区名 + 画布切换；右 = 历史、设置。
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useStudio } from "@/lib/store";
 import { Icon } from "./icons";
 import { cn } from "@/lib/utils";
@@ -16,8 +16,21 @@ function BoardSwitcher() {
   const deleteBoard = useStudio((s) => s.deleteBoard);
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
 
   const active = boards.find((b) => b.id === activeBoardId);
+
+  const startRename = (id: string, name: string) => {
+    setEditingId(id);
+    setEditingName(name);
+  };
+
+  const commitRename = () => {
+    if (!editingId) return;
+    renameBoard(editingId, editingName);
+    setEditingId(null);
+    setEditingName("");
+  };
 
   return (
     <div className="relative">
@@ -44,21 +57,24 @@ function BoardSwitcher() {
                 {editingId === b.id ? (
                   <input
                     autoFocus
-                    defaultValue={b.name}
-                    onBlur={(e) => {
-                      renameBoard(b.id, e.target.value);
-                      setEditingId(null);
-                    }}
+                    aria-label={`重命名${b.name}`}
+                    value={editingName}
+                    onChange={(event) => setEditingName(event.target.value)}
+                    onClick={(event) => event.stopPropagation()}
+                    onBlur={commitRename}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                      if (e.key === "Escape") setEditingId(null);
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setEditingId(null);
+                        setEditingName("");
+                      }
                     }}
-                    className="h-9 w-0 flex-1 rounded-control bg-transparent px-2.5 text-[13px] text-fg outline-none"
+                    className="tf-name-input h-9 w-0 flex-1 rounded-control bg-transparent px-2.5 text-[13px] text-fg"
                   />
                 ) : (
                   <button
                     type="button"
-                    onDoubleClick={() => setEditingId(b.id)}
                     onClick={() => {
                       switchBoard(b.id);
                       setOpen(false);
@@ -71,6 +87,20 @@ function BoardSwitcher() {
                     {b.name}
                   </button>
                 )}
+                {editingId !== b.id ? (
+                  <button
+                    type="button"
+                    title="重命名画布"
+                    aria-label={`重命名${b.name}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      startRename(b.id, b.name);
+                    }}
+                    className="rounded p-1 text-fg-mute opacity-0 transition-[opacity,color] hover:text-fg group-hover:opacity-100"
+                  >
+                    <Icon name="PencilLine" size={12} />
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   title="删除画布"
@@ -104,6 +134,17 @@ export function TopBar() {
   const setSettingsOpen = useStudio((s) => s.setSettingsOpen);
   const setHistoryOpen = useStudio((s) => s.setHistoryOpen);
   const settings = useStudio((s) => s.settings);
+  const [workspaceDraft, setWorkspaceDraft] = useState(workspaceName);
+  const [editingWorkspace, setEditingWorkspace] = useState(false);
+
+  useEffect(() => {
+    if (!editingWorkspace) setWorkspaceDraft(workspaceName);
+  }, [editingWorkspace, workspaceName]);
+
+  const commitWorkspaceName = () => {
+    renameWorkspace(workspaceDraft);
+    setEditingWorkspace(false);
+  };
 
   return (
     <>
@@ -114,9 +155,24 @@ export function TopBar() {
             TF
           </span>
           <input
-            className="w-[120px] border-none bg-transparent text-[13px] text-fg outline-none"
-            value={workspaceName}
-            onChange={(e) => renameWorkspace(e.target.value)}
+            aria-label="工作区名称"
+            className="tf-name-input w-[120px] bg-transparent text-[13px] text-fg"
+            value={workspaceDraft}
+            onFocus={(event) => {
+              setEditingWorkspace(true);
+              event.currentTarget.select();
+            }}
+            onChange={(event) => setWorkspaceDraft(event.target.value)}
+            onBlur={commitWorkspaceName}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setWorkspaceDraft(workspaceName);
+                setEditingWorkspace(false);
+                event.currentTarget.blur();
+              }
+            }}
             spellCheck={false}
           />
         </div>

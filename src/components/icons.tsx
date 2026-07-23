@@ -57,6 +57,7 @@ import {
   FolderOpen,
   PaintBrush,
   Palette,
+  PencilLine,
   ShareNetwork,
   Swap,
 } from "@phosphor-icons/react";
@@ -101,6 +102,7 @@ const REGISTRY: Record<string, ComponentType<IconProps>> = {
   MusicNotes,
   PaintBrush,
   Palette,
+  PencilLine,
   Paperclip,
   Paragraph,
   Pause,
