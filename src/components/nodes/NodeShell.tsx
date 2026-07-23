@@ -22,6 +22,7 @@ export function NodeShell({
   className,
   toolbar,
   showHeaderActions = true,
+  showDuplicateAction = true,
   frameless = false,
   portTop,
   resizeHandleTop,
@@ -41,6 +42,8 @@ export function NodeShell({
   toolbar?: ReactNode;
   /** 是否显示标题栏右侧的复制、删除按钮。 */
   showHeaderActions?: boolean;
+  /** 某些过程节点只允许删除，不应复制任务状态。 */
+  showDuplicateAction?: boolean;
   /** 由节点自身绘制独立面板，而非使用统一卡片外框。 */
   frameless?: boolean;
   /** 连线端口相对节点顶部的位置；适合预览区与编辑区分离的节点。 */
@@ -132,17 +135,19 @@ export function NodeShell({
         )}
         {showHeaderActions ? (
           <span className="nodrag flex items-center gap-0.5 opacity-0 transition-opacity group-hover/node:opacity-100">
-            <button
-              type="button"
-              title="复制节点"
-              onClick={(e) => {
-                e.stopPropagation();
-                duplicateNode(id);
-              }}
-              className="rounded p-1 text-fg-mute hover:bg-white/10 hover:text-fg"
-            >
-              <Icon name="Copy" size={12} />
-            </button>
+            {showDuplicateAction ? (
+              <button
+                type="button"
+                title="复制节点"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  duplicateNode(id);
+                }}
+                className="rounded p-1 text-fg-mute hover:bg-white/10 hover:text-fg"
+              >
+                <Icon name="Copy" size={12} />
+              </button>
+            ) : null}
             <button
               type="button"
               title="删除节点"

@@ -14,3 +14,4 @@ output/*
 .claude/
 .DS_Store
 npm-debug.log*
+.next-server.*.log

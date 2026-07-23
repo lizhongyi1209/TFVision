@@ -127,7 +127,8 @@ function Canvas() {
         maxZoom={2.5}
         fitView={false}
         zoomOnDoubleClick={false}
-        panOnScroll
+        zoomOnScroll
+        panOnScroll={false}
         selectionOnDrag={tool === "move"}
         panOnDrag={tool === "hand" ? true : [1, 2]}
         deleteKeyCode={["Delete", "Backspace"]}

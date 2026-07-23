@@ -12,9 +12,10 @@
   --color-card: #131315;
   --color-line: rgba(255, 255, 255, 0.08);
   --color-line-2: rgba(255, 255, 255, 0.15);
-  --color-fg: #f2f1ef;
-  --color-fg-dim: #a3a1a6;
-  --color-fg-mute: #67656c;
+  /* Global text hierarchy: keep secondary copy readable on every dark surface. */
+  --color-fg: #f4f3f1;
+  --color-fg-dim: #c7c5ca;
+  --color-fg-mute: #96939b;
   --color-accent: #f5f5f4;
   --color-accent-2: #ffffff;
   --color-danger: #f87171;
@@ -173,13 +174,136 @@ body {
   animation: drop-target-pulse 1.25s ease-in-out infinite;
 }
 
+/* Inline naming fields use the panel itself as their focus surface. */
+.tf-name-input,
+.tf-name-input:focus,
+.tf-name-input:focus-visible {
+  appearance: none;
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+}
+
+@keyframes result-node-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-14px) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes editor-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes generation-orbit {
+  0% {
+    transform: rotate(0deg) scale(0.97);
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.08);
+  }
+  50% {
+    transform: rotate(180deg) scale(1.03);
+    box-shadow: 0 0 0 16px rgba(255, 255, 255, 0);
+  }
+  100% {
+    transform: rotate(360deg) scale(0.97);
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+  }
+}
+
+.tf-result-node-enter {
+  animation: result-node-enter 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.tf-editor-enter {
+  animation: editor-enter 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.tf-editor-range {
+  width: 100%;
+  height: 3px;
+  appearance: none;
+  border-radius: 999px;
+  outline: none;
+}
+
+.tf-editor-range::-webkit-slider-thumb {
+  width: 15px;
+  height: 15px;
+  appearance: none;
+  border: 3px solid #171719;
+  border-radius: 999px;
+  background: #f5f5f4;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.28), 0 3px 10px rgba(0, 0, 0, 0.42);
+  cursor: ew-resize;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+.tf-editor-range:hover::-webkit-slider-thumb,
+.tf-editor-range:focus-visible::-webkit-slider-thumb {
+  transform: scale(1.12);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.09), 0 4px 12px rgba(0, 0, 0, 0.48);
+}
+
+.tf-editor-range::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 3px solid #171719;
+  border-radius: 999px;
+  background: #f5f5f4;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.28), 0 3px 10px rgba(0, 0, 0, 0.42);
+  cursor: ew-resize;
+}
+
+.tf-transform-handle {
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: linear-gradient(180deg, rgba(31, 31, 34, 0.96), rgba(13, 13, 15, 0.96));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.11), 0 7px 22px rgba(0, 0, 0, 0.46);
+  backdrop-filter: blur(10px);
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.tf-transform-handle:hover,
+.tf-transform-handle:focus-visible {
+  border-color: rgba(255, 255, 255, 0.55);
+  background: linear-gradient(180deg, rgba(48, 48, 52, 0.98), rgba(20, 20, 22, 0.98));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15), 0 9px 26px rgba(0, 0, 0, 0.54);
+  outline: none;
+}
+
+.tf-generation-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    radial-gradient(circle at 50% 48%, rgba(255, 255, 255, 0.08), transparent 38%);
+  background-size: 28px 28px, 28px 28px, 100% 100%;
+  mask-image: linear-gradient(to bottom, transparent, black 18%, black 82%, transparent);
+}
+
+.tf-generation-orbit {
+  animation: generation-orbit 3.4s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .scan-sweep,
   .shimmer,
   .spin,
   .popover-enter,
   .tf-drop-target-enter,
-  .tf-drop-target-pulse {
+  .tf-drop-target-pulse,
+  .tf-result-node-enter,
+  .tf-editor-enter,
+  .tf-generation-orbit {
     animation: none;
   }
 
@@ -209,6 +333,14 @@ input {
 }
 .tf-richtext:focus,
 .tf-richtext:focus-visible {
+  outline: none;
+  border: none;
+  box-shadow: none;
+}
+
+/* 图片生成面板沿用文本节点的沉浸式输入：聚焦不增加边框，内容高度由组件自适应。 */
+.tf-composer-prompt:focus,
+.tf-composer-prompt:focus-visible {
   outline: none;
   border: none;
   box-shadow: none;
@@ -303,6 +435,29 @@ input {
 .react-flow__edge:hover .react-flow__edge-path {
   stroke: var(--color-accent);
   stroke-width: 2;
+}
+
+.react-flow__edge.tf-generation-edge .react-flow__edge-path {
+  stroke: rgba(255, 255, 255, 0.56);
+  stroke-width: 1.8;
+  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.18));
+}
+
+.react-flow__edge.tf-generation-edge.animated .react-flow__edge-path {
+  stroke-dasharray: 7 7;
+  animation-duration: 0.72s;
+}
+
+.react-flow__edge.tf-generation-edge--success .react-flow__edge-path {
+  stroke: rgba(255, 255, 255, 0.34);
+  filter: none;
+}
+
+.react-flow__edge.tf-generation-edge--failed .react-flow__edge-path,
+.react-flow__edge.tf-generation-edge--cancelled .react-flow__edge-path {
+  stroke: rgba(248, 113, 113, 0.34);
+  stroke-dasharray: 3 5;
+  filter: none;
 }
 .react-flow__connection-path {
   stroke: var(--color-accent);

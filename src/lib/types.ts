@@ -104,7 +104,7 @@ export interface HistoryItem {
 // ── Canvas node data (client-side, persisted in boards.json) ────────────────
 
 export type NodeKind = "text" | "image" | "video";
-export type NodeStatus = "idle" | "running" | "success" | "failed";
+export type NodeStatus = "idle" | "running" | "success" | "failed" | "cancelled";
 
 export type TextNodeData = {
   label: string;
@@ -133,6 +133,16 @@ export type ImageNodeData = {
   startedAt?: number;
   jobIds: string[];
   prompt: string;
+  promptHeight?: number;
+  /** 每次提交创建的只读结果节点；任务状态与生成图片只写入该节点。 */
+  isGeneratedResult?: boolean;
+  /** 发起本次生成的参数/参考图片节点。 */
+  generationSourceId?: string;
+  cancelledAt?: number;
+  /** 局部编辑的透明蒙版与带高亮的 AI 引导图。 */
+  editMask?: string;
+  editGuide?: string;
+  editMaskImageIndex?: number;
   styleId: string;
   model: ModelName;
   resolution: Resolution;
