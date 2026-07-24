@@ -4,10 +4,12 @@
 // Interaction model follows libTV: dark dotted canvas, double-click to open
 // the add-node menu, ⊕ ports on node flanks, bottom dock, top workspace bar.
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Background,
   BackgroundVariant,
+  NodeToolbar,
+  Position,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
@@ -17,6 +19,7 @@ import { useStudio, type AppNode } from "@/lib/store";
 import { ImageNode } from "./nodes/ImageNode";
 import { TextNode } from "./nodes/TextNode";
 import { VideoNode } from "./nodes/VideoNode";
+import { GroupNode } from "./nodes/GroupNode";
 import { AddNodeMenu } from "./AddNodeMenu";
 import { TopBar } from "./TopBar";
 import { Dock } from "./Dock";
@@ -24,11 +27,48 @@ import { TemplateBar } from "./TemplateBar";
 import { SettingsPanel } from "./SettingsPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { Toaster } from "./Toaster";
+import { AgentPanel } from "./AgentPanel";
+import { Icon } from "./icons";
 import { fileToDataURL } from "@/lib/utils";
 
-const NODE_TYPES = { text: TextNode, image: ImageNode, video: VideoNode };
+const NODE_TYPES = { text: TextNode, image: ImageNode, video: VideoNode, group: GroupNode };
+
+function GroupSelectionToolbar() {
+  const nodes = useStudio((state) => state.nodes);
+  const createGroup = useStudio((state) => state.createGroup);
+  const selectedNodeIds = nodes
+    .filter((node) => node.selected && node.type !== "group" && !node.parentId)
+    .map((node) => node.id);
+
+  if (selectedNodeIds.length < 2) return null;
+
+  return (
+    <NodeToolbar
+      nodeId={selectedNodeIds}
+      isVisible
+      position={Position.Top}
+      offset={18}
+      className="nodrag flex h-10 items-center gap-2 rounded-control border border-line bg-panel/95 px-2.5 shadow-[0_14px_38px_rgba(0,0,0,0.42)] backdrop-blur-xl"
+    >
+      <span className="text-[11px] tabular-nums text-fg-mute">已选 {selectedNodeIds.length} 个节点</span>
+      <span className="h-5 w-px bg-line" />
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          createGroup(selectedNodeIds);
+        }}
+        className="flex h-7 items-center gap-1.5 rounded-md bg-white/10 px-2.5 text-[12px] font-medium text-fg transition-colors hover:bg-white/15"
+      >
+        <Icon name="Stack" size={14} />
+        建组
+      </button>
+    </NodeToolbar>
+  );
+}
 
 function Canvas() {
+  const [agentOpen, setAgentOpen] = useState(false);
   const nodes = useStudio((s) => s.nodes);
   const edges = useStudio((s) => s.edges);
   const onNodesChange = useStudio((s) => s.onNodesChange);
@@ -106,12 +146,13 @@ function Canvas() {
   );
 
   return (
-    <div
-      className={`h-screen w-screen ${tool === "hand" ? "tf-tool-hand" : "tf-tool-move"}`}
-      onDrop={onDrop}
-      onDragOver={(e) => e.preventDefault()}
-    >
-      <ReactFlow
+    <div className="relative flex h-screen w-screen overflow-hidden bg-ink">
+      <main
+        className={`relative min-w-0 flex-1 ${tool === "hand" ? "tf-tool-hand" : "tf-tool-move"}`}
+        onDrop={onDrop}
+        onDragOver={(e) => e.preventDefault()}
+      >
+        <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={NODE_TYPES}
@@ -129,21 +170,26 @@ function Canvas() {
         zoomOnDoubleClick={false}
         zoomOnScroll
         panOnScroll={false}
+        selectionKeyCode={["Shift", "Control", "Meta"]}
+        multiSelectionKeyCode={["Control", "Meta"]}
         selectionOnDrag={tool === "move"}
         panOnDrag={tool === "hand" ? true : [1, 2]}
         deleteKeyCode={["Delete", "Backspace"]}
         defaultViewport={{ x: 0, y: 0, zoom: 0.87 }}
       >
-        <Background variant={BackgroundVariant.Dots} gap={26} size={1.5} color="rgba(255,255,255,0.17)" />
-      </ReactFlow>
+        <Background variant={BackgroundVariant.Dots} gap={26} size={1.5} color="rgba(255,255,255,0.28)" />
+        <GroupSelectionToolbar />
+        </ReactFlow>
 
-      <TemplateBar />
-      <TopBar />
-      <Dock />
-      <AddNodeMenu />
-      <HistoryPanel />
-      <SettingsPanel />
-      <Toaster />
+        <TemplateBar />
+        <TopBar agentOpen={agentOpen} onAgentToggle={() => setAgentOpen((current) => !current)} />
+        <Dock />
+        <AddNodeMenu />
+        <HistoryPanel />
+        <SettingsPanel />
+        <Toaster />
+      </main>
+      <AgentPanel open={agentOpen} onClose={() => setAgentOpen(false)} />
     </div>
   );
 }

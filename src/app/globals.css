@@ -503,6 +503,50 @@ input {
   font-family: var(--font-sans);
 }
 
+.tf-agent-prompt,
+.tf-agent-prompt:focus,
+.tf-agent-prompt:focus-visible {
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+}
+
+.tf-agent-panel {
+  width: clamp(380px, 30vw, 438px);
+}
+
+.tf-agent-panel__surface {
+  width: clamp(380px, 30vw, 438px);
+}
+
+@media (max-width: 880px) {
+  .tf-agent-panel {
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: min(420px, calc(100vw - 20px));
+    box-shadow: -30px 0 70px rgba(0, 0, 0, 0.48);
+  }
+
+  .tf-agent-panel__surface {
+    width: min(420px, calc(100vw - 20px));
+    min-width: 0;
+  }
+}
+
+.tf-agent-panel.tf-agent-panel--closed {
+  width: 0;
+}
+
+/* 自定义分组区域自行绘制暗色底与圆角，清除 xyflow 对 group 类型附带的浅灰卡片。 */
+.react-flow__node-group,
+.react-flow__node-group.selected {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 /* 光标诚实化：节点可拖区域显示 grab（xyflow 默认），但 nodrag 区域（生成栏等）
    恢复常规箭头，按钮显示手型 —— 光标样式与真实可拖性一致。 */
 .react-flow__node .nodrag {

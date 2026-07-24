@@ -20,6 +20,7 @@ import {
   MAX_IMAGE_REFERENCES,
   type CombinationGroup,
   type CombinationOption,
+  type GroupNodeData,
   type ImageNodeData,
   type JobStatusResponse,
   type NodeKind,
@@ -31,7 +32,7 @@ import {
 import { styleSuffix } from "./models";
 import { downscaleImageSrc, fakeProgressCurve } from "./utils";
 
-export type AppNode = Node<TextNodeData | ImageNodeData | VideoNodeData>;
+export type AppNode = Node<TextNodeData | ImageNodeData | VideoNodeData | GroupNodeData>;
 
 export interface BoardMeta {
   id: string;
@@ -135,6 +136,61 @@ async function srcToRefDataUrl(src: string): Promise<string> {
 
 const isCombinationOptionValid = (option: CombinationOption) => Boolean(option.image);
 
+function nextGeneratedImageLabel(baseLabel: string, nodes: AppNode[], ignoredNodeIds: Set<string>) {
+  const base = baseLabel.trim() || "生成结果";
+  const usedLabels = new Set(
+    nodes.flatMap((candidate) => {
+      if (candidate.type !== "image" || ignoredNodeIds.has(candidate.id)) return [];
+      const label = String((candidate.data as ImageNodeData).label ?? "").trim();
+      return label ? [label] : [];
+    }),
+  );
+  if (!usedLabels.has(base)) return base;
+
+  let suffix = 1;
+  while (usedLabels.has(`${base}${suffix}`)) suffix += 1;
+  return `${base}${suffix}`;
+}
+
+function absoluteNodePosition(node: AppNode, nodes: AppNode[]): XYPosition {
+  let x = node.position.x;
+  let y = node.position.y;
+  let parentId = node.parentId;
+  const visited = new Set<string>();
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = nodes.find((candidate) => candidate.id === parentId);
+    if (!parent) break;
+    x += parent.position.x;
+    y += parent.position.y;
+    parentId = parent.parentId;
+  }
+  return { x, y };
+}
+
+function ungroupNodes(nodes: AppNode[], groupId: string, selectChildren = true): AppNode[] {
+  const group = nodes.find((node) => node.id === groupId && node.type === "group");
+  if (!group) return nodes;
+  const groupPosition = absoluteNodePosition(group, nodes);
+  return nodes
+    .filter((node) => node.id !== groupId)
+    .map((node) => {
+      if (node.parentId !== groupId) return node;
+      return {
+        ...node,
+        parentId: undefined,
+        extent: undefined,
+        expandParent: undefined,
+        zIndex: undefined,
+        selected: selectChildren,
+        position: {
+          x: groupPosition.x + node.position.x,
+          y: groupPosition.y + node.position.y,
+        },
+      } as AppNode;
+    });
+}
+
 function expandCombinationGroups(groups: CombinationGroup[], limit: number): CombinationOption[][] | null {
   let combinations: CombinationOption[][] = [[]];
   for (const group of groups) {
@@ -201,6 +257,8 @@ interface StudioState {
   removeEdge: (id: string) => void;
   updateNode: (id: string, patch: Record<string, unknown>) => void;
   duplicateNode: (id: string) => void;
+  createGroup: (nodeIds: string[]) => string | undefined;
+  ungroupNode: (groupId: string) => void;
   renameWorkspace: (name: string) => void;
 
   // menu / panels
@@ -240,7 +298,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   edges: [],
   counters: {},
 
-  workspaceName: "未命名工作区",
+  workspaceName: "画布 1",
   boards: [{ id: "b1", name: "画布 1" }],
   activeBoardId: "b1",
   boardsData: {},
@@ -255,7 +313,19 @@ export const useStudio = create<StudioState>((set, get) => ({
   tool: "move",
 
   onNodesChange: (changes) => {
-    set({ nodes: applyNodeChanges(changes, get().nodes) as AppNode[] });
+    const currentNodes = get().nodes;
+    const removedGroupIds = changes.flatMap((change) => {
+      if (change.type !== "remove") return [];
+      return currentNodes.some((node) => node.id === change.id && node.type === "group") ? [change.id] : [];
+    });
+    const preparedNodes = removedGroupIds.reduce(
+      (nextNodes, groupId) => ungroupNodes(nextNodes, groupId),
+      currentNodes,
+    );
+    const nonGroupChanges = changes.filter(
+      (change) => !(change.type === "remove" && removedGroupIds.includes(change.id)),
+    );
+    set({ nodes: applyNodeChanges(nonGroupChanges, preparedNodes) as AppNode[] });
     // Node removal via keyboard lands here too — stop any orphaned polls.
     for (const c of changes) {
       if (c.type === "remove") clearImageRuntime(c.id);
@@ -313,6 +383,12 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
 
   removeNode: (id) => {
+    const node = get().nodes.find((candidate) => candidate.id === id);
+    if (node?.type === "group") {
+      set({ nodes: ungroupNodes(get().nodes, id) });
+      get().scheduleSave();
+      return;
+    }
     clearImageRuntime(id);
     set({
       nodes: get().nodes.filter((n) => n.id !== id),
@@ -350,11 +426,102 @@ export const useStudio = create<StudioState>((set, get) => ({
       data.generationSourceId = undefined;
       data.cancelledAt = undefined;
     }
-    get().addNode(kind, pos, data);
+    const duplicateId = get().addNode(kind, pos, data);
+    if (src.parentId) {
+      set({
+        nodes: get().nodes.map((node) =>
+          node.id === duplicateId
+            ? ({ ...node, parentId: src.parentId, zIndex: 1 } as AppNode)
+            : node,
+        ),
+      });
+      get().scheduleSave();
+    }
+  },
+
+  createGroup: (nodeIds) => {
+    const { nodes, counters } = get();
+    const requestedIds = new Set(nodeIds);
+    const members = nodes.filter(
+      (node) => requestedIds.has(node.id) && node.type !== "group" && !node.parentId,
+    );
+    if (members.length < 2) {
+      get().showToast("请至少框选 2 个未分组节点", "error");
+      return undefined;
+    }
+
+    const boxes = members.map((node) => {
+      const dataWidth = Number((node.data as { width?: number }).width);
+      const dataHeight = Number((node.data as { height?: number }).height);
+      const width = node.measured?.width ?? node.width ?? (dataWidth > 0 ? dataWidth : 420);
+      const height = node.measured?.height ?? node.height ?? (dataHeight > 0 ? dataHeight : 300);
+      return { x: node.position.x, y: node.position.y, width, height };
+    });
+    const minX = Math.min(...boxes.map((box) => box.x));
+    const minY = Math.min(...boxes.map((box) => box.y));
+    const maxX = Math.max(...boxes.map((box) => box.x + box.width));
+    const maxY = Math.max(...boxes.map((box) => box.y + box.height));
+    const sidePadding = 32;
+    const topPadding = 72;
+    const bottomPadding = 32;
+    const groupPosition = { x: minX - sidePadding, y: minY - topPadding };
+    const groupWidth = Math.max(360, maxX - minX + sidePadding * 2);
+    const groupHeight = Math.max(240, maxY - minY + topPadding + bottomPadding);
+    const number = (counters.group ?? 0) + 1;
+    const groupId = uid();
+    const group: AppNode = {
+      id: groupId,
+      type: "group",
+      position: groupPosition,
+      data: { label: `分组 ${number}`, color: "graphite" } satisfies GroupNodeData,
+      width: groupWidth,
+      height: groupHeight,
+      dragHandle: ".tf-group-drag-handle",
+      selected: true,
+      deletable: true,
+      zIndex: 0,
+    };
+    const memberIds = new Set(members.map((node) => node.id));
+    const remainingNodes = nodes.filter((node) => !memberIds.has(node.id)).map((node) => ({ ...node, selected: false }));
+    const groupedMembers = members.map((node) => ({
+      ...node,
+      parentId: groupId,
+      // The group is a visual background and shared drag origin only. Members
+      // stay layout-independent so dialogs/resizing never expand or shift it.
+      extent: undefined,
+      expandParent: undefined,
+      zIndex: 1,
+      selected: false,
+      position: {
+        x: node.position.x - groupPosition.x,
+        y: node.position.y - groupPosition.y,
+      },
+    }));
+    set({
+      nodes: [...remainingNodes, group, ...groupedMembers] as AppNode[],
+      counters: { ...counters, group: number },
+    });
+    get().scheduleSave();
+    get().showToast(`已将 ${members.length} 个节点建组`, "success");
+    return groupId;
+  },
+
+  ungroupNode: (groupId) => {
+    const group = get().nodes.find((node) => node.id === groupId && node.type === "group");
+    if (!group) return;
+    set({ nodes: ungroupNodes(get().nodes, groupId) });
+    get().scheduleSave();
+    get().showToast("已取消分组", "success");
   },
 
   renameWorkspace: (name) => {
-    set({ workspaceName: name.trim() || "未命名工作区" });
+    const s = get();
+    const activeBoard = s.boards.find((board) => board.id === s.activeBoardId);
+    const nextName = name.trim() || activeBoard?.name || "画布 1";
+    set({
+      workspaceName: nextName,
+      boards: s.boards.map((board) => board.id === s.activeBoardId ? { ...board, name: nextName } : board),
+    });
     void get().saveWorkspaceNow();
   },
 
@@ -425,6 +592,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     const upstream = state.edges.filter((e) => e.target === nodeId);
     const textParts: string[] = [];
     const refSrcs: string[] = [];
+    let upstreamPrimaryImage: AppNode | undefined;
     for (const e of upstream) {
       const src = state.nodes.find((n) => n.id === e.source);
       if (!src) continue;
@@ -434,6 +602,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       } else if (src.type === "image") {
         const imageData = src.data as ImageNodeData;
         const sources = imageData.urls.length ? imageData.urls : imageData.url ? [imageData.url] : [];
+        if (sources.length && !upstreamPrimaryImage) upstreamPrimaryImage = src;
         refSrcs.push(...sources);
       }
     }
@@ -453,8 +622,12 @@ export const useStudio = create<StudioState>((set, get) => ({
 
     if (data.combinationEnabled) {
       const groups = (Array.isArray(data.combinationGroups) ? data.combinationGroups : []).slice(0, MAX_COMBINATION_GROUPS);
-      if (groups.length < 2) {
-        get().showToast("组合生图至少需要两个分类", "error");
+      const minimumUploadedGroupCount = ownSources.length ? 1 : 2;
+      if (groups.length < minimumUploadedGroupCount) {
+        get().showToast(
+          ownSources.length ? "请至少添加一个组合图片分类" : "节点无参考图时，组合生图至少需要两个图片分类",
+          "error",
+        );
         return;
       }
       const emptyGroup = groups.find((group) => !group.options.some(isCombinationOptionValid));
@@ -462,7 +635,8 @@ export const useStudio = create<StudioState>((set, get) => ({
         get().showToast(`“${emptyGroup.name || "未命名分类"}”还没有有效选项`, "error");
         return;
       }
-      const combinations = expandCombinationGroups(groups, MAX_BATCH_PROMPTS);
+      const primarySources: Array<string | null> = ownSources.length ? ownSources : [null];
+      const combinations = expandCombinationGroups(groups, Math.floor(MAX_BATCH_PROMPTS / primarySources.length));
       if (!combinations) {
         get().showToast(`组合数量超过 ${MAX_BATCH_PROMPTS}，请减少分类选项`, "error");
         return;
@@ -473,31 +647,38 @@ export const useStudio = create<StudioState>((set, get) => ({
         return;
       }
 
-      requests = combinations.map((combination) => {
+      requests = primarySources.flatMap((primarySource, primaryIndex) => combinations.map((combination) => {
         const combinationImages = combination.flatMap((option) => option.image ? [option.image] : []);
-        const sources = [...globalSources, ...combinationImages];
-        if (hasEditGuide && data.editGuide) sources.push(data.editGuide);
-        const mappingLines: string[] = [];
-        let imageOffset = globalSources.length;
+        const sources = [...(primarySource ? [primarySource] : []), ...refSrcs, ...combinationImages];
+        const useEditGuide = Boolean(
+          hasEditGuide &&
+          data.editGuide &&
+          primarySource &&
+          primarySource === ownSources[data.editMaskImageIndex ?? -1],
+        );
+        if (useEditGuide && data.editGuide) sources.push(data.editGuide);
+        const mappingLines: string[] = primarySource ? ["- 节点参考图：第 1 张参考图（主图）"] : [];
+        let imageOffset = (primarySource ? 1 : 0) + refSrcs.length;
         combination.forEach((option, index) => {
           if (!option.image) return;
           imageOffset += 1;
-          mappingLines.push(`- ${groups[index].name || `分类 ${index + 1}`}：第 ${imageOffset} 张参考图`);
+          mappingLines.push(`- ${groups[index].name || `分类 ${index + 1 + (primarySource ? 1 : 0)}`}：第 ${imageOffset} 张参考图`);
         });
         const mapping = mappingLines.length ? `组合参考对应关系：\n${mappingLines.join("\n")}` : "";
-        const label = combination.map((option, index) => {
-          const groupName = groups[index].name.trim() || `分类 ${index + 1}`;
+        const labelParts = primarySource ? [`节点参考图 ${primaryIndex + 1}`] : [];
+        labelParts.push(...combination.map((option, index) => {
+          const groupName = groups[index].name.trim() || `分类 ${index + 1 + (primarySource ? 1 : 0)}`;
           const optionIndex = groups[index].options.filter(isCombinationOptionValid).findIndex((candidate) => candidate.id === option.id) + 1;
           return `${groupName} ${optionIndex}`;
-        }).join(" · ");
+        }));
         return {
-          prompt: [...textParts, data.prompt.trim(), mapping, suffix, localEditInstruction].filter(Boolean).join("\n\n"),
+          prompt: [...textParts, data.prompt.trim(), mapping, suffix, useEditGuide ? localEditInstruction : ""].filter(Boolean).join("\n\n"),
           sources,
-          label,
+          label: labelParts.join(" · "),
         };
-      });
+      }));
       if (requests.some((request) => request.sources.length > MAX_IMAGE_REFERENCES)) {
-        get().showToast(`每个组合最多使用 ${MAX_IMAGE_REFERENCES} 张参考图，请减少全局参考图或图片分类`, "error");
+        get().showToast(`每个组合最多使用 ${MAX_IMAGE_REFERENCES} 张参考图，请减少连线参考图或图片分类`, "error");
         return;
       }
     } else {
@@ -530,27 +711,27 @@ export const useStudio = create<StudioState>((set, get) => ({
       : requests.map((request, index) => `【第 ${index + 1} 组】\n${request.prompt}`).join("\n\n");
     const sourceWidth = data.width || 470;
     const sourceHeight = data.height ?? sourceWidth;
+    const sourcePosition = absoluteNodePosition(node, state.nodes);
     const existingResults = state.nodes.filter(
       (candidate) =>
         candidate.type === "image" && (candidate.data as ImageNodeData).generationSourceId === nodeId,
     );
-    const resultNumber = Math.max(
-      0,
-      ...existingResults.map((candidate) => {
-        const match = String((candidate.data as ImageNodeData).label).match(/(\d+)$/);
-        return match ? Number(match[1]) : 0;
-      }),
-    ) + 1;
     const nextResultY = existingResults.length
-      ? Math.max(...existingResults.map((candidate) => candidate.position.y)) + Math.min(sourceHeight, 560) + 110
-      : node.position.y;
+      ? Math.max(...existingResults.map((candidate) => absoluteNodePosition(candidate, state.nodes).y)) + Math.min(sourceHeight, 560) + 110
+      : sourcePosition.y;
+    const primaryReferenceNode = ownSources.length ? node : upstreamPrimaryImage;
+    const resultLabel = nextGeneratedImageLabel(
+      primaryReferenceNode ? String((primaryReferenceNode.data as ImageNodeData).label ?? "") : "生成结果",
+      state.nodes,
+      new Set([nodeId, ...(primaryReferenceNode ? [primaryReferenceNode.id] : [])]),
+    );
     const resultPosition = {
-      x: node.position.x + sourceWidth + 180,
+      x: sourcePosition.x + sourceWidth + 180,
       y: nextResultY,
     };
     const startedAt = Date.now();
     const resultNodeId = get().addNode("image", resultPosition, {
-      label: `生成结果 ${resultNumber}`,
+      label: resultLabel,
       url: null,
       urls: [],
       activeIndex: 0,
@@ -785,6 +966,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         const boardsData: Record<string, BoardSnapshot> = {};
         for (const b of file.boards) {
           const rawNodes = (b.nodes as AppNode[]) ?? [];
+          const groupIds = new Set(rawNodes.filter((node) => node.type === "group").map((node) => node.id));
           const interruptedResultIds = new Set(
             rawNodes
               .filter((node) => {
@@ -795,11 +977,14 @@ export const useStudio = create<StudioState>((set, get) => ({
               .map((node) => node.id),
           );
           const nodes = rawNodes.map((node) => {
-            if (!interruptedResultIds.has(node.id)) return node;
+            const layoutIndependentNode = node.parentId && groupIds.has(node.parentId)
+              ? ({ ...node, extent: undefined, expandParent: undefined } as AppNode)
+              : node;
+            if (!interruptedResultIds.has(node.id)) return layoutIndependentNode;
             return {
-              ...node,
+              ...layoutIndependentNode,
               data: {
-                ...node.data,
+                ...layoutIndependentNode.data,
                 status: "failed",
                 progress: 0,
                 error: "提交过程被中断，请从原节点重新生成。",
@@ -823,8 +1008,9 @@ export const useStudio = create<StudioState>((set, get) => ({
         }
         const activeId = file.boards.some((b) => b.id === file.activeId) ? file.activeId : file.boards[0].id;
         const active = boardsData[activeId];
+        const activeBoardName = file.boards.find((board) => board.id === activeId)?.name || file.workspaceName || "画布 1";
         set({
-          workspaceName: file.workspaceName || "未命名工作区",
+          workspaceName: activeBoardName,
           boards: file.boards.map((b) => ({ id: b.id, name: b.name })),
           activeBoardId: activeId,
           boardsData,
@@ -897,6 +1083,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       boards: [...s.boards, { id, name }],
       boardsData,
       activeBoardId: id,
+      workspaceName: name,
       nodes: [],
       edges: [],
       counters: {},
@@ -909,12 +1096,20 @@ export const useStudio = create<StudioState>((set, get) => ({
     if (id === s.activeBoardId) return;
     const boardsData = { ...s.boardsData, [s.activeBoardId]: { nodes: s.nodes, edges: s.edges, counters: s.counters } };
     const target = boardsData[id] ?? { nodes: [], edges: [], counters: {} };
-    set({ boardsData, activeBoardId: id, nodes: target.nodes, edges: target.edges, counters: target.counters });
+    const targetName = s.boards.find((board) => board.id === id)?.name || s.workspaceName;
+    set({ boardsData, activeBoardId: id, workspaceName: targetName, nodes: target.nodes, edges: target.edges, counters: target.counters });
     get().scheduleSave();
   },
 
   renameBoard: (id, name) => {
-    set({ boards: get().boards.map((b) => (b.id === id ? { ...b, name: name.trim() || b.name } : b)) });
+    const s = get();
+    const current = s.boards.find((board) => board.id === id);
+    if (!current) return;
+    const nextName = name.trim() || current.name;
+    set({
+      boards: s.boards.map((board) => board.id === id ? { ...board, name: nextName } : board),
+      ...(id === s.activeBoardId ? { workspaceName: nextName } : {}),
+    });
     void get().saveWorkspaceNow();
   },
 
@@ -930,7 +1125,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     if (id === s.activeBoardId) {
       const next = rest[0];
       const snap = boardsData[next.id] ?? { nodes: [], edges: [], counters: {} };
-      set({ boards: rest, boardsData, activeBoardId: next.id, nodes: snap.nodes, edges: snap.edges, counters: snap.counters });
+      set({ boards: rest, boardsData, activeBoardId: next.id, workspaceName: next.name, nodes: snap.nodes, edges: snap.edges, counters: snap.counters });
     } else {
       set({ boards: rest, boardsData });
     }

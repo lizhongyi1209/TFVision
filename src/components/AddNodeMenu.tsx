@@ -115,7 +115,7 @@ export function AddNodeMenu() {
               className="flex w-full items-center gap-2.5 rounded-control px-2.5 py-2 text-left text-[13px] text-fg transition-colors hover:bg-white/5"
             >
               <Icon name="ClockCounterClockwise" size={15} className="text-fg-dim" />
-              从生成历史选择
+              从资产管理选择
             </button>
             <input
               ref={fileRef}

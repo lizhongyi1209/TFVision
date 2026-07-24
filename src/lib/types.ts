@@ -106,6 +106,14 @@ export interface HistoryItem {
 export type NodeKind = "text" | "image" | "video";
 export type NodeStatus = "idle" | "running" | "success" | "failed" | "cancelled";
 
+export type GroupColor = "graphite" | "slate" | "teal" | "amber" | "rose";
+
+export type GroupNodeData = {
+  label: string;
+  color: GroupColor;
+  [key: string]: unknown;
+};
+
 export type TextNodeData = {
   label: string;
   text: string;
@@ -154,7 +162,7 @@ export type ImageNodeData = {
   /** 批量模式下，每个非空条目都是一次独立并发提交。 */
   batchPromptEnabled?: boolean;
   batchPrompts?: string[];
-  /** 通用组合模式：每个分类取一个有效选项并做笛卡尔积。 */
+  /** 通用组合模式：节点参考图优先作为第一分类，再与上传分类做笛卡尔积。 */
   combinationEnabled?: boolean;
   combinationGroups?: CombinationGroup[];
   /** 结果节点记录本批实际提交的提示词套数。 */
@@ -202,7 +210,7 @@ export type VideoNodeData = {
   [key: string]: unknown;
 };
 
-export type AnyNodeData = TextNodeData | ImageNodeData | VideoNodeData;
+export type AnyNodeData = TextNodeData | ImageNodeData | VideoNodeData | GroupNodeData;
 
 // ── Board persistence (data/boards.json) ────────────────────────────────────
 

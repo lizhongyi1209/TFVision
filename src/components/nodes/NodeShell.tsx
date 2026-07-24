@@ -65,11 +65,12 @@ export function NodeShell({
     e.stopPropagation();
     const node = rf.getNode(id);
     if (!node) return;
+    const absolutePosition = rf.getInternalNode(id)?.internals.positionAbsolute ?? node.position;
     const w = node.measured?.width ?? width;
     const flowPosition =
       side === "out"
-        ? { x: node.position.x + w + 120, y: node.position.y }
-        : { x: node.position.x - w - 120, y: node.position.y };
+        ? { x: absolutePosition.x + w + 120, y: absolutePosition.y }
+        : { x: absolutePosition.x - w - 120, y: absolutePosition.y };
     openMenu({
       flowPosition,
       screen: { x: e.clientX, y: e.clientY },

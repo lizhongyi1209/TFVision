@@ -1,6 +1,6 @@
 "use client";
 
-// 设置面板 — o1key API 令牌 + 连接测试（复用 TVision 的接口协议）。
+// 设置面板 — API 令牌 + 连接测试（复用 TVision 的接口协议）。
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
@@ -85,7 +85,7 @@ export function SettingsPanel() {
 
             <div className="flex flex-col gap-4">
               <Field
-                label="o1key API 令牌 (Bearer)"
+                label="API令牌"
                 hint={
                   settings?.hasApiKey
                     ? `当前已保存：${settings.apiKeyMasked} · 留空则保持不变`
@@ -100,12 +100,6 @@ export function SettingsPanel() {
                   className="h-10 w-full rounded-control border border-line bg-panel-2 px-3 text-sm text-fg outline-none transition-colors placeholder:text-fg-mute focus:border-accent"
                   spellCheck={false}
                 />
-              </Field>
-
-              <Field label="线路">
-                <div className="flex h-10 items-center rounded-control border border-line bg-panel-2 px-3 text-sm text-fg-dim">
-                  全球加速 · api.o1key.cn
-                </div>
               </Field>
 
               {testMsg ? (

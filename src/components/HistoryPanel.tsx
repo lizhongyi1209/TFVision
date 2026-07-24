@@ -1,6 +1,6 @@
 "use client";
 
-// 历史资产 — 全屏浮层（对齐 libTV 的历史资产页）：图片/视频两个 tab、
+// 资产管理 — 全屏浮层：图片/视频两个 tab、
 // 时间排序、点击一张 → 以图片节点放回当前画布。
 
 import { useCallback, useEffect, useState } from "react";
@@ -103,7 +103,7 @@ export function HistoryPanel() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-line px-6 py-4">
-              <h2 className="text-[15px] font-semibold text-fg">历史资产</h2>
+              <h2 className="text-[15px] font-semibold text-fg">资产管理</h2>
               <button type="button" onClick={() => setOpen(false)} className="rounded-full p-1.5 text-fg-mute hover:bg-white/5 hover:text-fg">
                 <Icon name="X" size={16} />
               </button>
@@ -121,7 +121,7 @@ export function HistoryPanel() {
                       tab === t ? "border-accent text-fg" : "border-transparent text-fg-mute hover:text-fg-dim",
                     )}
                   >
-                    {t === "image" ? "图片历史" : "视频历史"}({(items ?? []).filter((i) => i.kind === t).length})
+                    {t === "image" ? "图片资产" : "视频资产"}({(items ?? []).filter((i) => i.kind === t).length})
                   </button>
                 ))}
               </div>
@@ -141,7 +141,7 @@ export function HistoryPanel() {
                   <Spinner size={22} className="text-fg-mute" />
                 </div>
               ) : sorted.length === 0 ? (
-                <div className="flex h-full items-center justify-center text-[13px] text-fg-mute">暂无历史记录</div>
+                <div className="flex h-full items-center justify-center text-[13px] text-fg-mute">暂无资产</div>
               ) : (
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
                   {sorted.map((item) => (

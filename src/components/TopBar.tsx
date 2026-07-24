@@ -1,8 +1,8 @@
 "use client";
 
-// 顶栏（对齐 libTV 布局）：左 = Logo + 工作区名 + 画布切换；右 = 历史、设置。
+// 顶栏（对齐 libTV 布局）：左 = Logo + 画布切换；右 = 历史、设置。
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useStudio } from "@/lib/store";
 import { Icon } from "./icons";
 import { cn } from "@/lib/utils";
@@ -128,53 +128,23 @@ function BoardSwitcher() {
   );
 }
 
-export function TopBar() {
-  const workspaceName = useStudio((s) => s.workspaceName);
-  const renameWorkspace = useStudio((s) => s.renameWorkspace);
+export function TopBar({ agentOpen, onAgentToggle }: { agentOpen: boolean; onAgentToggle: () => void }) {
   const setSettingsOpen = useStudio((s) => s.setSettingsOpen);
   const setHistoryOpen = useStudio((s) => s.setHistoryOpen);
   const settings = useStudio((s) => s.settings);
-  const [workspaceDraft, setWorkspaceDraft] = useState(workspaceName);
-  const [editingWorkspace, setEditingWorkspace] = useState(false);
-
-  useEffect(() => {
-    if (!editingWorkspace) setWorkspaceDraft(workspaceName);
-  }, [editingWorkspace, workspaceName]);
-
-  const commitWorkspaceName = () => {
-    renameWorkspace(workspaceDraft);
-    setEditingWorkspace(false);
-  };
 
   return (
     <>
       {/* Left cluster */}
       <div className="pointer-events-auto absolute left-4 top-4 z-50 flex items-center gap-2">
-        <div className="flex h-9 items-center gap-2 rounded-control border border-line bg-panel/95 px-3 backdrop-blur-xl">
+        <div
+          title="TFvision"
+          aria-label="TFvision"
+          className="flex h-9 w-9 items-center justify-center rounded-control border border-line bg-panel/95 backdrop-blur-xl"
+        >
           <span className="flex h-5 w-5 items-center justify-center rounded-md bg-accent/90 text-[11px] font-bold text-ink">
             TF
           </span>
-          <input
-            aria-label="工作区名称"
-            className="tf-name-input w-[120px] bg-transparent text-[13px] text-fg"
-            value={workspaceDraft}
-            onFocus={(event) => {
-              setEditingWorkspace(true);
-              event.currentTarget.select();
-            }}
-            onChange={(event) => setWorkspaceDraft(event.target.value)}
-            onBlur={commitWorkspaceName}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") event.currentTarget.blur();
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setWorkspaceDraft(workspaceName);
-                setEditingWorkspace(false);
-                event.currentTarget.blur();
-              }
-            }}
-            spellCheck={false}
-          />
         </div>
         <BoardSwitcher />
       </div>
@@ -187,7 +157,7 @@ export function TopBar() {
           className="flex h-9 items-center gap-1.5 rounded-control border border-line bg-panel/95 px-3 text-[13px] text-fg-dim backdrop-blur-xl transition-colors hover:border-line-2 hover:text-fg"
         >
           <Icon name="ClockCounterClockwise" size={14} />
-          历史资产
+          资产管理
         </button>
         <button
           type="button"
@@ -201,6 +171,21 @@ export function TopBar() {
         >
           <Icon name="Gear" size={14} />
           {settings && !settings.hasApiKey ? "配置令牌" : "设置"}
+        </button>
+        <button
+          type="button"
+          onClick={onAgentToggle}
+          aria-expanded={agentOpen}
+          aria-controls="tf-agent-panel"
+          className={cn(
+            "flex h-9 items-center gap-1.5 rounded-control border px-3 text-[13px] font-medium backdrop-blur-xl transition-all",
+            agentOpen
+              ? "border-white/20 bg-white text-[#171719] shadow-[0_10px_28px_rgba(0,0,0,0.28)]"
+              : "border-line bg-panel/95 text-fg-dim hover:border-line-2 hover:bg-white/[0.055] hover:text-fg",
+          )}
+        >
+          <Icon name="ChatText" size={14} weight={agentOpen ? "bold" : "regular"} />
+          Agent
         </button>
       </div>
     </>

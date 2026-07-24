@@ -5,7 +5,7 @@
 // model picker, 比例·画质·张数 popover, style preset, and submit (libTV-style).
 
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { useReactFlow, type NodeProps } from "@xyflow/react";
+import { useKeyPress, useReactFlow, type NodeProps } from "@xyflow/react";
 import type { AppNode } from "@/lib/store";
 import { useStudio } from "@/lib/store";
 import {
@@ -37,6 +37,9 @@ import { Chip } from "../ui";
 
 const isImageFile = (file: File) =>
   file.type.startsWith("image/") || /\.(?:png|jpe?g|webp)$/i.test(file.name);
+
+const isMultiSelectClick = (event: Pick<React.MouseEvent, "ctrlKey" | "metaKey" | "shiftKey">) =>
+  event.ctrlKey || event.metaKey || event.shiftKey;
 
 const PROMPT_MIN_HEIGHT = 60;
 const PROMPT_MAX_HEIGHT = 240;
@@ -160,9 +163,10 @@ function createCombinationGroup(index: number): CombinationGroup {
 
 const combinationOptionIsValid = (option: CombinationOption) => Boolean(option.image);
 
-function combinationCount(groups: CombinationGroup[]) {
-  if (groups.length < 2) return 0;
-  let total = 1;
+function combinationCount(groups: CombinationGroup[], primaryImageCount = 0) {
+  const minimumUploadedGroupCount = primaryImageCount ? 1 : 2;
+  if (groups.length < minimumUploadedGroupCount) return 0;
+  let total = primaryImageCount || 1;
   for (const group of groups) {
     const count = group.options.filter(combinationOptionIsValid).length;
     if (!count) return 0;
@@ -208,6 +212,7 @@ const CombinationOptionCard = memo(function CombinationOptionCard({
 });
 
 function CombinationBuilder({
+  primaryImages,
   groups,
   onRenameGroup,
   onRemoveGroup,
@@ -215,6 +220,7 @@ function CombinationBuilder({
   onAddImages,
   onRemoveOption,
 }: {
+  primaryImages: string[];
   groups: CombinationGroup[];
   onRenameGroup: (groupId: string, name: string) => void;
   onRemoveGroup: (groupId: string) => void;
@@ -222,8 +228,10 @@ function CombinationBuilder({
   onAddImages: (groupId: string, files: FileList) => void;
   onRemoveOption: (groupId: string, optionId: string) => void;
 }) {
-  const optionCounts = groups.map((group) => group.options.filter(combinationOptionIsValid).length);
-  const total = combinationCount(groups);
+  const uploadedOptionCounts = groups.map((group) => group.options.filter(combinationOptionIsValid).length);
+  const optionCounts = primaryImages.length ? [primaryImages.length, ...uploadedOptionCounts] : uploadedOptionCounts;
+  const minimumUploadedGroupCount = primaryImages.length ? 1 : 2;
+  const total = combinationCount(groups, primaryImages.length);
   const overLimit = total > MAX_BATCH_PROMPTS;
 
   return (
@@ -238,24 +246,52 @@ function CombinationBuilder({
         </span>
       </div>
       <div className="nowheel max-h-[410px] space-y-2.5 overflow-y-auto overscroll-contain p-2.5">
+        {primaryImages.length ? (
+          <section className="rounded-[12px] border border-white/15 bg-white/[0.035] p-2.5">
+            <div className="mb-2.5 flex items-center gap-2">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-white/15 bg-white/[0.06] text-[9px] tabular-nums text-fg-dim">
+                01
+              </span>
+              <span className="min-w-0 flex-1 text-[12px] font-medium text-fg">节点参考图</span>
+              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[9px] text-fg-dim">优先主图</span>
+              <span className="text-[9px] tabular-nums text-fg-mute">{primaryImages.length} 个有效选项</span>
+            </div>
+            <div className="nowheel flex gap-2 overflow-x-auto pb-1">
+              {primaryImages.map((image, index) => (
+                <div
+                  key={`${index}-${image.slice(0, 24)}`}
+                  className="relative aspect-square w-[132px] shrink-0 overflow-hidden rounded-[12px] border border-line bg-ink/55"
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "132px 132px" }}
+                >
+                  <div className="flex h-full w-full items-center justify-center p-1.5">
+                    <img src={image} alt={`节点参考图 ${index + 1}`} loading="lazy" className="h-full w-full object-contain" draggable={false} />
+                    <span className="pointer-events-none absolute left-2 top-2 rounded-full border border-white/10 bg-ink/75 px-1.5 py-0.5 text-[9px] tabular-nums text-fg-dim backdrop-blur">
+                      {index + 1}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
         {groups.map((group, groupIndex) => (
           <section key={group.id} className="rounded-[12px] border border-line bg-white/[0.02] p-2.5">
             <div className="mb-2.5 flex items-center gap-2">
               <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.035] text-[9px] tabular-nums text-fg-mute">
-                {String(groupIndex + 1).padStart(2, "0")}
+                {String(groupIndex + 1 + (primaryImages.length ? 1 : 0)).padStart(2, "0")}
               </span>
               <input
                 value={group.name}
                 onChange={(event) => onRenameGroup(group.id, event.target.value)}
                 aria-label={`分类 ${groupIndex + 1} 名称`}
                 className="tf-name-input h-7 min-w-0 flex-1 rounded-md bg-transparent px-1 text-[12px] font-medium text-fg placeholder:text-fg-mute"
-                placeholder={`分类 ${groupIndex + 1}`}
+                placeholder={`分类 ${groupIndex + 1 + (primaryImages.length ? 1 : 0)}`}
               />
-              <span className="text-[9px] tabular-nums text-fg-mute">{optionCounts[groupIndex]} 个有效选项</span>
+              <span className="text-[9px] tabular-nums text-fg-mute">{uploadedOptionCounts[groupIndex]} 个有效选项</span>
               <button
                 type="button"
-                title={groups.length <= 2 ? "至少保留两个分类" : "删除分类"}
-                disabled={groups.length <= 2}
+                title={groups.length <= minimumUploadedGroupCount ? `至少保留${primaryImages.length ? "一个补充" : "两个"}分类` : "删除分类"}
+                disabled={groups.length <= minimumUploadedGroupCount}
                 onClick={() => onRemoveGroup(group.id)}
                 className="flex h-7 w-7 items-center justify-center rounded-full text-fg-mute transition-colors hover:bg-danger/10 hover:text-danger disabled:pointer-events-none disabled:opacity-30"
               >
@@ -305,7 +341,11 @@ function CombinationBuilder({
         "border-t border-line px-3 py-2 text-[10px]",
         overLimit ? "bg-danger/[0.06] text-danger" : "text-fg-mute",
       )}>
-        {overLimit ? `当前超过 ${MAX_BATCH_PROMPTS} 组上限，请减少图片` : "每个分类仅使用图片；一次可多选上传"}
+        {overLimit
+          ? `当前超过 ${MAX_BATCH_PROMPTS} 组上限，请减少图片`
+          : primaryImages.length
+            ? "节点参考图作为第一分类；下方分类可继续批量上传"
+            : "节点无参考图时，请在这里至少添加两个图片分类"}
       </div>
     </div>
   );
@@ -496,11 +536,17 @@ function GeneratedImageResult({
   data: ImageNodeData;
 }) {
   const cancelImageGeneration = useStudio((s) => s.cancelImageGeneration);
+  const [focusedResultIndex, setFocusedResultIndex] = useState<number | null>(null);
   const nodeWidth = data.width || 470;
   const nodeHeight = data.height ?? nodeWidth;
   const urls = data.urls.length ? data.urls : data.url ? [data.url] : [];
   const resultLabels = Array.isArray(data.resultLabels) ? data.resultLabels : [];
+  const focusedResultUrl = focusedResultIndex === null ? null : urls[focusedResultIndex] ?? null;
   const running = data.status === "running";
+
+  useEffect(() => {
+    if (focusedResultIndex !== null && focusedResultIndex >= urls.length) setFocusedResultIndex(null);
+  }, [focusedResultIndex, urls.length]);
 
   return (
     <NodeShell
@@ -562,15 +608,37 @@ function GeneratedImageResult({
           </div>
         ) : data.status === "success" && urls.length ? (
           <>
-            {urls.length > 1 ? (
+            {urls.length > 1 && focusedResultIndex === null ? (
               <span className="pointer-events-none absolute right-2.5 top-2.5 z-10 rounded-full border border-white/10 bg-ink/75 px-2 py-1 text-[10px] tabular-nums text-fg-dim shadow-[0_6px_18px_rgba(0,0,0,.28)] backdrop-blur">
                 同批 {urls.length} 张
               </span>
             ) : null}
-            {urls.length === 1 ? (
+            {focusedResultUrl ? (
+              <>
+                <img
+                  src={focusedResultUrl}
+                  alt={`生成结果 ${focusedResultIndex! + 1}`}
+                  className="h-full w-full object-contain"
+                  draggable={false}
+                />
+                <button
+                  type="button"
+                  title="返回全部生成结果"
+                  aria-label={`返回全部生成结果，当前第 ${focusedResultIndex! + 1} 张，共 ${urls.length} 张`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setFocusedResultIndex(null);
+                  }}
+                  className="nodrag absolute left-2.5 top-2.5 z-10 flex h-8 items-center gap-1.5 rounded-full border border-white/15 bg-ink/78 px-2.5 text-[10px] tabular-nums text-fg-dim shadow-[0_8px_24px_rgba(0,0,0,.3)] backdrop-blur-md transition-[border-color,color,transform] hover:border-white/30 hover:text-fg active:scale-95"
+                >
+                  <Icon name="GridFour" size={12} />
+                  <span>{focusedResultIndex! + 1}/{urls.length}</span>
+                </button>
+              </>
+            ) : urls.length === 1 ? (
               <>
                 <img src={urls[0]} alt="生成结果" className="h-full w-full object-contain" draggable={false} />
-                {resultLabels[0] ? (
+                {!data.combinationEnabled && resultLabels[0] ? (
                   <span className="pointer-events-none absolute inset-x-2.5 bottom-2.5 truncate rounded-full border border-white/10 bg-ink/78 px-2.5 py-1.5 text-center text-[10px] text-fg-dim shadow-[0_6px_18px_rgba(0,0,0,.28)] backdrop-blur">
                     {resultLabels[0]}
                   </span>
@@ -582,14 +650,28 @@ function GeneratedImageResult({
                 urls.length <= 4 ? "grid-cols-2" : "grid-cols-3",
               )}>
                 {urls.map((url, index) => (
-                  <div key={`${index}-${url.slice(0, 24)}`} className="relative aspect-square min-h-0 overflow-hidden rounded-[8px] bg-ink">
+                  <button
+                    key={`${index}-${url.slice(0, 24)}`}
+                    type="button"
+                    title={`查看生成结果 ${index + 1}`}
+                    aria-label={`查看生成结果 ${index + 1}，共 ${urls.length} 张`}
+                    onClick={(event) => {
+                      if (isMultiSelectClick(event)) return;
+                      event.stopPropagation();
+                      setFocusedResultIndex(index);
+                    }}
+                    className="nodrag group/result relative aspect-square min-h-0 overflow-hidden rounded-[8px] border border-transparent bg-ink text-left transition-[border-color,transform,box-shadow] duration-200 hover:z-[1] hover:scale-[1.012] hover:border-white/20 hover:shadow-[0_10px_28px_rgba(0,0,0,.35)] focus-visible:border-white/35 focus-visible:outline-none"
+                  >
                     <img src={url} alt={`生成结果 ${index + 1}`} loading="lazy" className="h-full w-full object-contain p-1" draggable={false} />
-                    {resultLabels[index] ? (
+                    <span className="pointer-events-none absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full border border-white/12 bg-ink/72 text-fg-dim opacity-0 shadow-[0_6px_18px_rgba(0,0,0,.3)] backdrop-blur transition-[opacity,transform] group-hover/result:opacity-100 group-hover/result:scale-100 group-focus-visible/result:opacity-100">
+                      <Icon name="ArrowsOutSimple" size={12} />
+                    </span>
+                    {!data.combinationEnabled && resultLabels[index] ? (
                       <span title={resultLabels[index]} className="pointer-events-none absolute inset-x-1.5 bottom-1.5 truncate rounded-full bg-ink/76 px-2 py-1 text-center text-[8px] text-fg-dim backdrop-blur">
                         {resultLabels[index]}
                       </span>
                     ) : null}
-                  </div>
+                  </button>
                 ))}
               </div>
             )}
@@ -619,6 +701,7 @@ function GeneratedImageResult({
 
 export const ImageNode = memo(function ImageNode({ id, selected, dragging, data }: NodeProps<AppNode>) {
   const d = data as ImageNodeData;
+  const ownImageUrls = d.urls.length ? d.urls : d.url ? [d.url] : [];
   const updateNode = useStudio((s) => s.updateNode);
   const generateImage = useStudio((s) => s.generateImage);
   const showToast = useStudio((s) => s.showToast);
@@ -641,6 +724,8 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   const [editor, setEditor] = useState<"none" | "crop" | "sticker" | "brush">("none");
   const [stickerSrc, setStickerSrc] = useState<string | null>(null);
   const rf = useReactFlow();
+  const selectionModifierPressed = useKeyPress(["Control", "Meta", "Shift"]);
+  const multipleNodesSelected = nodes.reduce((count, node) => count + (node.selected ? 1 : 0), 0) > 1;
 
   const submitGeneration = useCallback(async () => {
     const resultNodeId = await generateImage(id);
@@ -689,14 +774,15 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   }, [mutateCombinationGroups]);
 
   const removeCombinationGroup = useCallback((groupId: string) => {
-    mutateCombinationGroups((groups) => groups.length <= 2 ? groups : groups.filter((group) => group.id !== groupId));
-  }, [mutateCombinationGroups]);
+    const minimumGroupCount = ownImageUrls.length ? 1 : 2;
+    mutateCombinationGroups((groups) => groups.length <= minimumGroupCount ? groups : groups.filter((group) => group.id !== groupId));
+  }, [mutateCombinationGroups, ownImageUrls.length]);
 
   const addCombinationGroup = useCallback(() => {
     mutateCombinationGroups((groups) => groups.length >= MAX_COMBINATION_GROUPS
       ? groups
-      : [...groups, createCombinationGroup(groups.length)]);
-  }, [mutateCombinationGroups]);
+      : [...groups, createCombinationGroup(groups.length + (ownImageUrls.length ? 1 : 0))]);
+  }, [mutateCombinationGroups, ownImageUrls.length]);
 
   const addCombinationImages = useCallback((groupId: string, files: FileList) => {
     const imageFiles = Array.from(files).filter(isImageFile);
@@ -742,11 +828,11 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   }, [popover]);
 
   useEffect(() => {
-    if (!selected || dragging) {
+    if (!selected || dragging || multipleNodesSelected || selectionModifierPressed) {
       setPopover("none");
       setComposerOpen(false);
     }
-  }, [dragging, selected]);
+  }, [dragging, multipleNodesSelected, selected, selectionModifierPressed]);
 
   useEffect(() => {
     const textarea = promptRef.current;
@@ -820,9 +906,8 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   const batchPrompts = d.batchPromptEnabled ? normalizeBatchPrompts(d) : [];
   const filledBatchPromptCount = batchPrompts.filter((prompt) => prompt.trim()).length;
   const combinationGroups = d.combinationEnabled && Array.isArray(d.combinationGroups) ? d.combinationGroups : [];
-  const totalCombinationCount = combinationCount(combinationGroups);
+  const totalCombinationCount = combinationCount(combinationGroups, ownImageUrls.length);
   const styleLabel = STYLE_PRESETS.find((s) => s.id === d.styleId)?.label ?? "风格";
-  const ownImageUrls = d.urls.length ? d.urls : d.url ? [d.url] : [];
   const canAddImages = ownImageUrls.length < MAX_IMAGE_REFERENCES;
   const focusedImageUrl = focusedImageIndex === null ? null : ownImageUrls[focusedImageIndex] ?? null;
   const activeImageUrl = focusedImageUrl ?? d.url ?? ownImageUrls[0] ?? null;
@@ -921,17 +1006,17 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   };
 
   const quickToolbar = activeImageUrl ? (
-    <div className="flex items-center gap-1 rounded-full border border-line bg-panel/95 p-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.38)] backdrop-blur-xl">
-      <button type="button" onClick={() => setEditor("crop")} className="flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] text-fg-dim transition-colors hover:bg-white/[0.07] hover:text-fg">
-        <Icon name="Scissors" size={12} />裁剪
+    <div className="flex w-max flex-nowrap items-center gap-1 whitespace-nowrap rounded-full border border-line bg-panel/95 p-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.38)] backdrop-blur-xl">
+      <button type="button" onClick={() => setEditor("crop")} className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] text-fg-dim transition-colors hover:bg-white/[0.07] hover:text-fg">
+        <Icon name="Scissors" size={12} className="shrink-0" />裁剪
       </button>
-      <span className="h-4 border-l border-line" />
-      <button type="button" onClick={() => stickerFileRef.current?.click()} className="flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] text-fg-dim transition-colors hover:bg-white/[0.07] hover:text-fg">
-        <Icon name="Stack" size={12} />贴图
+      <span className="h-4 shrink-0 border-l border-line" />
+      <button type="button" onClick={() => stickerFileRef.current?.click()} className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] text-fg-dim transition-colors hover:bg-white/[0.07] hover:text-fg">
+        <Icon name="Stack" size={12} className="shrink-0" />贴图
       </button>
-      <span className="h-4 border-l border-line" />
-      <button type="button" onClick={() => setEditor("brush")} className={cn("relative flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] transition-colors hover:bg-white/[0.07] hover:text-fg", hasActiveEditMask ? "bg-[#ff684c]/10 text-[#ff8a72]" : "text-fg-dim")}>
-        <Icon name="PaintBrush" size={12} />画笔
+      <span className="h-4 shrink-0 border-l border-line" />
+      <button type="button" onClick={() => setEditor("brush")} className={cn("relative flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] transition-colors hover:bg-white/[0.07] hover:text-fg", hasActiveEditMask ? "bg-[#ff684c]/10 text-[#ff8a72]" : "text-fg-dim")}>
+        <Icon name="PaintBrush" size={12} className="shrink-0" />画笔
         {hasActiveEditMask ? <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-[#ff684c] shadow-[0_0_8px_rgba(255,104,76,.7)]" /> : null}
       </button>
     </div>
@@ -961,7 +1046,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
       portTop={nodeHeight / 2}
       resizeHandleTop={Math.max(8, nodeHeight - 32)}
       onResizeBegin={() => setComposerOpen(false)}
-      toolbar={selected && activeImageUrl && !running ? quickToolbar : undefined}
+      toolbar={selected && !multipleNodesSelected && activeImageUrl && !running ? quickToolbar : undefined}
     >
       {/* ── Canvas area ── */}
       <div
@@ -1001,6 +1086,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
           void pickFiles(e.dataTransfer.files);
         }}
         onClick={(event) => {
+          if (selectionModifierPressed || isMultiSelectClick(event)) return;
           if (ownImageUrls.length || running || dragging) return;
           const target = event.target as HTMLElement;
           if (target.closest("button, input")) return;
@@ -1043,7 +1129,10 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
                 <button
                   type="button"
                   title={`放大查看参考图 ${index + 1}`}
-                  onClick={() => focusImage(url, index)}
+                  onClick={(event) => {
+                    if (selectionModifierPressed || isMultiSelectClick(event)) return;
+                    focusImage(url, index);
+                  }}
                   className="nodrag h-full w-full overflow-hidden"
                 >
                   <img
@@ -1080,7 +1169,10 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
             <img
               src={activePreviewUrl}
               alt={`${focusedImageUrl ? `参考图 ${(focusedImageIndex ?? 0) + 1}` : "参考图"}${hasActiveEditMask ? "，已标记局部编辑范围" : ""}`}
-              onClick={() => setComposerOpen(true)}
+              onClick={(event) => {
+                if (selectionModifierPressed || isMultiSelectClick(event)) return;
+                setComposerOpen(true);
+              }}
               className="nodrag h-full w-full cursor-pointer object-contain"
               draggable={false}
             />
@@ -1093,14 +1185,20 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
             <button
               type="button"
               className="flex items-center gap-2 self-center rounded-control px-2 py-1 hover:bg-white/5 hover:text-fg"
-              onClick={() => fileRef.current?.click()}
+              onClick={(event) => {
+                if (selectionModifierPressed || isMultiSelectClick(event)) return;
+                fileRef.current?.click();
+              }}
             >
               <Icon name="UploadSimple" size={13} /> 上传参考图 · 可多选
             </button>
             <button
               type="button"
               className="flex items-center gap-2 self-center rounded-control px-2 py-1 transition-colors hover:bg-white/5 hover:text-fg"
-              onClick={() => setComposerOpen(true)}
+              onClick={(event) => {
+                if (selectionModifierPressed || isMultiSelectClick(event)) return;
+                setComposerOpen(true);
+              }}
             >
               <Icon name="TextT" size={13} /> 直接输入文字生成
             </button>
@@ -1182,7 +1280,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
       </div>
 
       {/* ── Composer ── */}
-      {composerOpen && selected && !dragging ? (
+      {composerOpen && selected && !dragging && !multipleNodesSelected ? (
         <div
           role="dialog"
           aria-label={ownImageUrls.length ? "图片生成设置" : "文生图设置"}
@@ -1231,9 +1329,11 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
                 return;
               }
               const currentGroups = Array.isArray(d.combinationGroups) ? d.combinationGroups : [];
-              const groups = currentGroups.length >= 2
-                ? currentGroups
-                : [createCombinationGroup(0), createCombinationGroup(1)];
+              const minimumGroupCount = ownImageUrls.length ? 1 : 2;
+              const groups = [...currentGroups];
+              while (groups.length < minimumGroupCount) {
+                groups.push(createCombinationGroup(groups.length + (ownImageUrls.length ? 1 : 0)));
+              }
               updateNode(id, {
                 combinationEnabled: true,
                 combinationGroups: groups,
@@ -1268,6 +1368,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
               spellCheck={false}
             />
             <CombinationBuilder
+              primaryImages={ownImageUrls}
               groups={combinationGroups}
               onRenameGroup={renameCombinationGroup}
               onRemoveGroup={removeCombinationGroup}
