@@ -15,7 +15,11 @@ import {
   type XYPosition,
 } from "@xyflow/react";
 import {
+  MAX_BATCH_PROMPTS,
+  MAX_COMBINATION_GROUPS,
   MAX_IMAGE_REFERENCES,
+  type CombinationGroup,
+  type CombinationOption,
   type ImageNodeData,
   type JobStatusResponse,
   type NodeKind,
@@ -76,6 +80,10 @@ export function defaultImageData(label: string): ImageNodeData {
     progress: 0,
     jobIds: [],
     prompt: "",
+    batchPromptEnabled: false,
+    batchPrompts: [],
+    combinationEnabled: false,
+    combinationGroups: [],
     styleId: "none",
     model: "Nano Banana Pro",
     resolution: "2K",
@@ -123,6 +131,42 @@ async function srcToRefDataUrl(src: string): Promise<string> {
   // data URLs are re-compressed too (bounds request size); /api/media URLs are same-origin.
   const { dataUrl } = await downscaleImageSrc(src, 1600, 0.92);
   return dataUrl;
+}
+
+const isCombinationOptionValid = (option: CombinationOption) => Boolean(option.image);
+
+function expandCombinationGroups(groups: CombinationGroup[], limit: number): CombinationOption[][] | null {
+  let combinations: CombinationOption[][] = [[]];
+  for (const group of groups) {
+    const options = group.options.filter(isCombinationOptionValid);
+    combinations = combinations.flatMap((combination) => options.map((option) => [...combination, option]));
+    if (combinations.length > limit) return null;
+  }
+  return combinations;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+interface ImageGenerationRequest {
+  prompt: string;
+  sources: string[];
+  label?: string;
 }
 
 interface StudioState {
@@ -393,30 +437,97 @@ export const useStudio = create<StudioState>((set, get) => ({
         refSrcs.push(...sources);
       }
     }
-    const own = data.prompt.trim();
-    let prompt = [...textParts, own].filter(Boolean).join("\n\n");
     const suffix = styleSuffix(data.styleId);
-    if (suffix) prompt = prompt ? `${prompt}\n\n${suffix}` : suffix;
-
     const hasEditGuide = Boolean(
       data.editGuide &&
       data.editMask &&
       typeof data.editMaskImageIndex === "number" &&
       data.editMaskImageIndex === data.activeIndex,
     );
-    if (hasEditGuide) {
-      const localEditInstruction = "局部编辑要求：最后一张参考图中的珊瑚色涂抹表示直接修改范围；珊瑚色线条若圈出或指向内容，则表示需要修改其圈定或指向的内容。只根据提示词修改这些被标记的内容；其他主体、背景、构图、光线和细节必须保持与原图一致。最终结果中不要保留珊瑚色标记。";
-      prompt = prompt ? `${prompt}\n\n${localEditInstruction}` : localEditInstruction;
-    }
-
-    if (!prompt) {
-      get().showToast("请先输入提示词，或连入一个文本节点", "error");
-      return;
-    }
-
+    const localEditInstruction = hasEditGuide
+      ? "局部编辑要求：最后一张参考图中的珊瑚色涂抹表示直接修改范围；珊瑚色线条若圈出或指向内容，则表示需要修改其圈定或指向的内容。只根据提示词修改这些被标记的内容；其他主体、背景、构图、光线和细节必须保持与原图一致。最终结果中不要保留珊瑚色标记。"
+      : "";
     const ownSources = data.urls.length ? data.urls : data.url ? [data.url] : [];
-    const sources = [...ownSources, ...refSrcs].slice(0, MAX_IMAGE_REFERENCES - (hasEditGuide ? 1 : 0));
-    if (hasEditGuide && data.editGuide) sources.push(data.editGuide);
+    const globalSources = [...ownSources, ...refSrcs];
+    let requests: ImageGenerationRequest[];
+
+    if (data.combinationEnabled) {
+      const groups = (Array.isArray(data.combinationGroups) ? data.combinationGroups : []).slice(0, MAX_COMBINATION_GROUPS);
+      if (groups.length < 2) {
+        get().showToast("组合生图至少需要两个分类", "error");
+        return;
+      }
+      const emptyGroup = groups.find((group) => !group.options.some(isCombinationOptionValid));
+      if (emptyGroup) {
+        get().showToast(`“${emptyGroup.name || "未命名分类"}”还没有有效选项`, "error");
+        return;
+      }
+      const combinations = expandCombinationGroups(groups, MAX_BATCH_PROMPTS);
+      if (!combinations) {
+        get().showToast(`组合数量超过 ${MAX_BATCH_PROMPTS}，请减少分类选项`, "error");
+        return;
+      }
+      const hasUserPrompt = Boolean(data.prompt.trim() || textParts.length);
+      if (!hasUserPrompt) {
+        get().showToast("请填写组合生图的通用提示词", "error");
+        return;
+      }
+
+      requests = combinations.map((combination) => {
+        const combinationImages = combination.flatMap((option) => option.image ? [option.image] : []);
+        const sources = [...globalSources, ...combinationImages];
+        if (hasEditGuide && data.editGuide) sources.push(data.editGuide);
+        const mappingLines: string[] = [];
+        let imageOffset = globalSources.length;
+        combination.forEach((option, index) => {
+          if (!option.image) return;
+          imageOffset += 1;
+          mappingLines.push(`- ${groups[index].name || `分类 ${index + 1}`}：第 ${imageOffset} 张参考图`);
+        });
+        const mapping = mappingLines.length ? `组合参考对应关系：\n${mappingLines.join("\n")}` : "";
+        const label = combination.map((option, index) => {
+          const groupName = groups[index].name.trim() || `分类 ${index + 1}`;
+          const optionIndex = groups[index].options.filter(isCombinationOptionValid).findIndex((candidate) => candidate.id === option.id) + 1;
+          return `${groupName} ${optionIndex}`;
+        }).join(" · ");
+        return {
+          prompt: [...textParts, data.prompt.trim(), mapping, suffix, localEditInstruction].filter(Boolean).join("\n\n"),
+          sources,
+          label,
+        };
+      });
+      if (requests.some((request) => request.sources.length > MAX_IMAGE_REFERENCES)) {
+        get().showToast(`每个组合最多使用 ${MAX_IMAGE_REFERENCES} 张参考图，请减少全局参考图或图片分类`, "error");
+        return;
+      }
+    } else {
+      const ownPrompts = data.batchPromptEnabled
+        ? (Array.isArray(data.batchPrompts) ? data.batchPrompts : [])
+            .slice(0, MAX_BATCH_PROMPTS)
+            .map((item) => item.trim())
+            .filter(Boolean)
+        : [data.prompt.trim()];
+      if (data.batchPromptEnabled && !ownPrompts.length) {
+        get().showToast("请至少填写一套批量提示词", "error");
+        return;
+      }
+      const sources = globalSources.slice(0, MAX_IMAGE_REFERENCES - (hasEditGuide ? 1 : 0));
+      if (hasEditGuide && data.editGuide) sources.push(data.editGuide);
+      requests = ownPrompts
+        .map((own) => ({
+          prompt: [...textParts, own, suffix, localEditInstruction].filter(Boolean).join("\n\n"),
+          sources,
+        }))
+        .filter((request) => Boolean(request.prompt));
+      if (!requests.length) {
+        get().showToast("请先输入提示词，或连入一个文本节点", "error");
+        return;
+      }
+    }
+
+    const prompt = requests.length === 1
+      ? requests[0].prompt
+      : requests.map((request, index) => `【第 ${index + 1} 组】\n${request.prompt}`).join("\n\n");
     const sourceWidth = data.width || 470;
     const sourceHeight = data.height ?? sourceWidth;
     const existingResults = state.nodes.filter(
@@ -448,7 +559,15 @@ export const useStudio = create<StudioState>((set, get) => ({
       error: undefined,
       startedAt,
       jobIds: [],
+      jobLabels: [],
+      resultLabels: [],
       prompt,
+      batchPromptEnabled: !data.combinationEnabled && requests.length > 1,
+      batchPrompts: requests.map((request) => request.prompt),
+      combinationEnabled: Boolean(data.combinationEnabled),
+      combinationGroups: data.combinationEnabled ? data.combinationGroups : [],
+      batchSize: requests.length,
+      submissionFailures: 0,
       styleId: data.styleId,
       model: data.model,
       resolution: data.resolution,
@@ -475,42 +594,68 @@ export const useStudio = create<StudioState>((set, get) => ({
     // Submission continues independently so the result node and its connection
     // appear immediately. The source node remains editable and can launch more runs.
     void (async () => {
-      const images: string[] = [];
       try {
-        for (const src of sources) {
-          if (!imageResultIsRunning(resultNodeId, get)) return;
-          images.push(await srcToRefDataUrl(src));
-        }
+        const imageCache = new Map<string, Promise<string>>();
+        const preparedRequests = await Promise.all(requests.map(async (request) => ({
+          prompt: request.prompt,
+          label: request.label,
+          images: await Promise.all(request.sources.map((src) => {
+            const cached = imageCache.get(src);
+            if (cached) return cached;
+            const pending = srcToRefDataUrl(src);
+            imageCache.set(src, pending);
+            return pending;
+          })),
+        })));
 
         if (!imageResultIsRunning(resultNodeId, get)) return;
         const controller = new AbortController();
         submitControllers.set(resultNodeId, controller);
-        const res = await fetch("/api/jobs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            prompt,
-            model: data.model,
-            resolution: data.resolution,
-            aspectRatio: data.aspectRatio,
-            billing: data.billing,
-            quality: data.quality,
-            count: data.count,
-            images,
+        const submissions = await Promise.allSettled(
+          preparedRequests.map(async (request) => {
+            const res = await fetch("/api/jobs", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                prompt: request.prompt,
+                model: data.model,
+                resolution: data.resolution,
+                aspectRatio: data.aspectRatio,
+                billing: data.billing,
+                quality: data.quality,
+                count: data.count,
+                images: request.images,
+              }),
+              signal: controller.signal,
+            });
+            const payload = (await res.json()) as { jobs?: { id: string }[]; error?: string };
+            if (!res.ok || !payload.jobs?.length) throw new Error(payload.error || "提交失败");
+            return { ids: payload.jobs.map((job) => job.id), label: request.label };
           }),
-          signal: controller.signal,
-        });
+        );
         submitControllers.delete(resultNodeId);
-        const payload = (await res.json()) as { jobs?: { id: string }[]; error?: string };
-        if (!res.ok || !payload.jobs?.length) throw new Error(payload.error || "提交失败");
         if (!imageResultIsRunning(resultNodeId, get)) return;
-        const jobIds = payload.jobs.map((job) => job.id);
-        get().updateNode(resultNodeId, { jobIds });
-        pollImageNode(resultNodeId, jobIds, set, get);
+        const jobIds = submissions.flatMap((submission) => submission.status === "fulfilled" ? submission.value.ids : []);
+        const jobLabels = submissions.flatMap((submission) => submission.status === "fulfilled"
+          ? submission.value.ids.map((_, index) => submission.value.label
+            ? `${submission.value.label}${submission.value.ids.length > 1 ? ` · ${index + 1}` : ""}`
+            : "")
+          : []);
+        const submissionFailures = submissions.length - submissions.filter((submission) => submission.status === "fulfilled").length;
+        if (!jobIds.length) {
+          const firstFailure = submissions.find((submission) => submission.status === "rejected");
+          if (firstFailure?.status === "rejected") throw firstFailure.reason;
+          throw new Error("提交失败");
+        }
+        get().updateNode(resultNodeId, { jobIds, jobLabels, submissionFailures });
+        if (submissionFailures) {
+          get().showToast(`已提交 ${requests.length - submissionFailures} 组，${submissionFailures} 组提交失败`, "error");
+        }
+        pollImageNode(resultNodeId, jobIds, set, get, submissionFailures, jobLabels);
       } catch (e) {
         submitControllers.delete(resultNodeId);
         if (!imageResultIsRunning(resultNodeId, get)) return;
-        const message = (e as Error).message || "提交失败";
+        const message = e instanceof Error ? e.message : typeof e === "string" ? e : "提交失败";
         get().updateNode(resultNodeId, { status: "failed", error: message, progress: 0 });
         settleGenerationEdge(resultNodeId, "failed", set, get);
         get().showToast(message, "error");
@@ -692,7 +837,9 @@ export const useStudio = create<StudioState>((set, get) => ({
         for (const n of active.nodes) {
           if (n.type === "image") {
             const d = n.data as ImageNodeData;
-            if (d.status === "running" && d.jobIds?.length) pollImageNode(n.id, d.jobIds, set, get);
+            if (d.status === "running" && d.jobIds?.length) {
+              pollImageNode(n.id, d.jobIds, set, get, d.submissionFailures ?? 0, d.jobLabels);
+            }
           } else if (n.type === "video") {
             const d = n.data as VideoNodeData;
             if (d.status === "running" && d.taskId) pollVideoNode(n.id, d.taskId, d.prompt, set, get);
@@ -831,7 +978,14 @@ function settleGenerationEdge(
   get().scheduleSave();
 }
 
-function pollImageNode(nodeId: string, jobIds: string[], set: SetFn, get: GetFn) {
+function pollImageNode(
+  nodeId: string,
+  jobIds: string[],
+  set: SetFn,
+  get: GetFn,
+  submissionFailures = 0,
+  jobLabels: string[] = [],
+) {
   clearPoll(nodeId);
   const startedAt = ((get().nodes.find((n) => n.id === nodeId)?.data as ImageNodeData | undefined)?.startedAt) ?? Date.now();
 
@@ -839,8 +993,10 @@ function pollImageNode(nodeId: string, jobIds: string[], set: SetFn, get: GetFn)
     if (!nodeExists(get, nodeId)) return clearPoll(nodeId);
     let results: JobStatusResponse[];
     try {
-      results = await Promise.all(
-        jobIds.map(async (id) => (await fetch(`/api/jobs/${encodeURIComponent(id)}`)).json() as Promise<JobStatusResponse>),
+      results = await mapWithConcurrency(
+        jobIds,
+        24,
+        async (id) => (await fetch(`/api/jobs/${encodeURIComponent(id)}`)).json() as Promise<JobStatusResponse>,
       );
     } catch {
       // transient network error — keep polling
@@ -850,23 +1006,36 @@ function pollImageNode(nodeId: string, jobIds: string[], set: SetFn, get: GetFn)
     if (!imageResultIsRunning(nodeId, get)) return clearPoll(nodeId);
 
     const done = results.filter((r) => r.status !== "running");
-    const succeeded = results.filter((r) => r.status === "success");
     const failed = results.filter((r) => r.status === "failed");
 
     if (done.length === results.length) {
       clearPoll(nodeId);
-      const urls = succeeded.flatMap((r) => r.images);
+      const entries = results.flatMap((result, index) => result.status === "success"
+        ? result.images.map((url, imageIndex) => ({
+            url,
+            label: jobLabels[index]
+              ? `${jobLabels[index]}${result.images.length > 1 ? ` · ${imageIndex + 1}` : ""}`
+              : "",
+          }))
+        : []);
+      const urls = entries.map((entry) => entry.url);
+      const resultLabels = entries.map((entry) => entry.label);
       if (urls.length) {
         patchNode(get, nodeId, {
           status: "success",
           progress: 100,
           urls,
+          resultLabels,
           url: urls[0],
           activeIndex: 0,
-          error: failed.length ? `${failed.length} 张生成失败` : undefined,
+          error: failed.length || submissionFailures
+            ? [failed.length ? `${failed.length} 张生成失败` : "", submissionFailures ? `${submissionFailures} 组提交失败` : ""].filter(Boolean).join("，")
+            : undefined,
         });
         settleGenerationEdge(nodeId, "success", set, get);
-        if (failed.length) get().showToast(`部分成功：${failed.length} 张失败`, "error");
+        if (failed.length || submissionFailures) {
+          get().showToast(`部分成功：${failed.length + submissionFailures} 项失败`, "error");
+        }
       } else {
         const msg = failed[0]?.error || "生成失败";
         patchNode(get, nodeId, { status: "failed", progress: 0, error: msg });
@@ -878,7 +1047,9 @@ function pollImageNode(nodeId: string, jobIds: string[], set: SetFn, get: GetFn)
 
     // Fake progress with real upstream progress as a floor.
     const elapsed = (Date.now() - startedAt) / 1000;
-    const real = Math.max(0, ...results.map((r) => (r.progress ?? 0) * 100));
+    const real = results.length
+      ? results.reduce((sum, result) => sum + (result.progress ?? 0) * 100, 0) / results.length
+      : 0;
     const fake = fakeProgressCurve(elapsed);
     patchNode(get, nodeId, { progress: Math.min(99, Math.max(fake, real)) });
     pollTimers.set(nodeId, setTimeout(tick, 2600));

@@ -4,11 +4,21 @@
 // image / upload preview; a composer docked under the card carries prompt,
 // model picker, 比例·画质·张数 popover, style preset, and submit (libTV-style).
 
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useReactFlow, type NodeProps } from "@xyflow/react";
 import type { AppNode } from "@/lib/store";
 import { useStudio } from "@/lib/store";
-import { MAX_IMAGE_REFERENCES, type ImageNodeData, type ModelName, type Quality, type Resolution } from "@/lib/types";
+import {
+  MAX_BATCH_PROMPTS,
+  MAX_COMBINATION_GROUPS,
+  MAX_IMAGE_REFERENCES,
+  type CombinationGroup,
+  type CombinationOption,
+  type ImageNodeData,
+  type ModelName,
+  type Quality,
+  type Resolution,
+} from "@/lib/types";
 import {
   ASPECT_RATIOS,
   GPT_IMAGE_2_RATIOS,
@@ -30,7 +40,276 @@ const isImageFile = (file: File) =>
 
 const PROMPT_MIN_HEIGHT = 60;
 const PROMPT_MAX_HEIGHT = 240;
+const DEFAULT_BATCH_PROMPT_COUNT = 4;
 const IMAGE_COUNT_OPTIONS = Array.from({ length: 9 }, (_, index) => index + 1);
+
+function normalizeBatchPrompts(data: ImageNodeData) {
+  const prompts = Array.isArray(data.batchPrompts) ? data.batchPrompts.slice(0, MAX_BATCH_PROMPTS) : [];
+  if (!prompts.length && data.prompt) prompts.push(data.prompt);
+  while (prompts.length < DEFAULT_BATCH_PROMPT_COUNT) prompts.push("");
+  return prompts;
+}
+
+const BatchPromptRow = memo(function BatchPromptRow({
+  index,
+  value,
+  canRemove,
+  onChange,
+  onRemove,
+  onSubmit,
+}: {
+  index: number;
+  value: string;
+  canRemove: boolean;
+  onChange: (index: number, value: string) => void;
+  onRemove: (index: number) => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <div
+      className="group/batch grid grid-cols-[28px_minmax(0,1fr)_28px] items-start gap-2 border-b border-line px-2.5 py-2.5 last:border-b-0"
+      style={{ contentVisibility: "auto", containIntrinsicSize: "72px" }}
+    >
+      <span className="mt-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-white/10 bg-white/[0.035] text-[10px] tabular-nums text-fg-mute">
+        {index + 1}
+      </span>
+      <textarea
+        value={value}
+        rows={2}
+        onChange={(event) => onChange(index, event.target.value)}
+        onKeyDown={(event) => {
+          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+            event.preventDefault();
+            onSubmit();
+          }
+        }}
+        placeholder={`第 ${index + 1} 套提示词`}
+        aria-label={`第 ${index + 1} 套提示词`}
+        className="tf-composer-prompt nodrag nowheel min-h-[52px] w-full resize-none rounded-[10px] border border-transparent bg-white/[0.025] px-3 py-2 text-[12px] leading-relaxed text-fg outline-none transition-colors placeholder:text-fg-mute/70 hover:bg-white/[0.04] focus:bg-white/[0.05]"
+        spellCheck={false}
+      />
+      <button
+        type="button"
+        title={canRemove ? `删除第 ${index + 1} 段` : "默认保留 4 段"}
+        aria-label={`删除第 ${index + 1} 段`}
+        disabled={!canRemove}
+        onClick={() => onRemove(index)}
+        className="mt-1 flex h-7 w-7 items-center justify-center rounded-full text-fg-mute opacity-0 transition-[opacity,color,background] hover:bg-danger/10 hover:text-danger disabled:pointer-events-none group-hover/batch:opacity-100 focus:opacity-100"
+      >
+        <Icon name="Trash" size={12} />
+      </button>
+    </div>
+  );
+});
+
+function BatchPromptEditor({
+  prompts,
+  onChange,
+  onAdd,
+  onRemove,
+  onSubmit,
+}: {
+  prompts: string[];
+  onChange: (index: number, value: string) => void;
+  onAdd: () => void;
+  onRemove: (index: number) => void;
+  onSubmit: () => void;
+}) {
+  const filledCount = prompts.filter((prompt) => prompt.trim()).length;
+  const atLimit = prompts.length >= MAX_BATCH_PROMPTS;
+
+  return (
+    <div className="mb-3 overflow-hidden rounded-[14px] border border-line bg-ink/35 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]">
+      <div className="flex items-center justify-between border-b border-line bg-white/[0.025] px-3 py-2">
+        <span className="text-[10px] tracking-wide text-fg-mute">每个非空段独立提交 · 结果归入同一节点</span>
+        <span className="rounded-full bg-white/[0.055] px-2 py-0.5 text-[10px] tabular-nums text-fg-dim">
+          {filledCount} 已填写 / {prompts.length} 段
+        </span>
+      </div>
+      <div className="nowheel max-h-[350px] overflow-y-auto overscroll-contain">
+        {prompts.map((prompt, index) => (
+          <BatchPromptRow
+            key={index}
+            index={index}
+            value={prompt}
+            canRemove={prompts.length > DEFAULT_BATCH_PROMPT_COUNT}
+            onChange={onChange}
+            onRemove={onRemove}
+            onSubmit={onSubmit}
+          />
+        ))}
+      </div>
+      <button
+        type="button"
+        disabled={atLimit}
+        onClick={onAdd}
+        className="flex h-10 w-full items-center justify-center gap-1.5 border-t border-line text-[11px] text-fg-dim transition-colors hover:bg-white/[0.045] hover:text-fg disabled:cursor-not-allowed disabled:text-fg-mute/50"
+      >
+        <Icon name="Plus" size={11} weight="bold" />
+        {atLimit ? "已达到 100 段上限" : `新增一段 · ${prompts.length}/${MAX_BATCH_PROMPTS}`}
+      </button>
+    </div>
+  );
+}
+
+const combinationUid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+
+function createCombinationGroup(index: number): CombinationGroup {
+  return { id: combinationUid("group"), name: `分类 ${index + 1}`, options: [] };
+}
+
+const combinationOptionIsValid = (option: CombinationOption) => Boolean(option.image);
+
+function combinationCount(groups: CombinationGroup[]) {
+  if (groups.length < 2) return 0;
+  let total = 1;
+  for (const group of groups) {
+    const count = group.options.filter(combinationOptionIsValid).length;
+    if (!count) return 0;
+    total *= count;
+    if (total > MAX_BATCH_PROMPTS) return total;
+  }
+  return total;
+}
+
+const CombinationOptionCard = memo(function CombinationOptionCard({
+  groupId,
+  option,
+  index,
+  onRemove,
+}: {
+  groupId: string;
+  option: CombinationOption;
+  index: number;
+  onRemove: (groupId: string, optionId: string) => void;
+}) {
+  return (
+    <div
+      className="group/option relative aspect-square w-[132px] shrink-0 overflow-hidden rounded-[12px] border border-line bg-ink/55 transition-colors hover:border-line-2"
+      style={{ contentVisibility: "auto", containIntrinsicSize: "132px 132px" }}
+    >
+      <div className="flex h-full w-full items-center justify-center p-1.5">
+        <img src={option.image} alt={`选项 ${index + 1}`} loading="lazy" className="h-full w-full object-contain" draggable={false} />
+        <span className="pointer-events-none absolute left-2 top-2 rounded-full border border-white/10 bg-ink/75 px-1.5 py-0.5 text-[9px] tabular-nums text-fg-dim backdrop-blur">
+          {index + 1}
+        </span>
+      </div>
+      <button
+        type="button"
+        title="删除选项"
+        aria-label={`删除选项 ${index + 1}`}
+        onClick={() => onRemove(groupId, option.id)}
+        className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-white/10 bg-ink/75 text-fg-mute opacity-0 backdrop-blur transition-[opacity,color] hover:text-danger group-hover/option:opacity-100 focus:opacity-100"
+      >
+        <Icon name="X" size={10} weight="bold" />
+      </button>
+    </div>
+  );
+});
+
+function CombinationBuilder({
+  groups,
+  onRenameGroup,
+  onRemoveGroup,
+  onAddGroup,
+  onAddImages,
+  onRemoveOption,
+}: {
+  groups: CombinationGroup[];
+  onRenameGroup: (groupId: string, name: string) => void;
+  onRemoveGroup: (groupId: string) => void;
+  onAddGroup: () => void;
+  onAddImages: (groupId: string, files: FileList) => void;
+  onRemoveOption: (groupId: string, optionId: string) => void;
+}) {
+  const optionCounts = groups.map((group) => group.options.filter(combinationOptionIsValid).length);
+  const total = combinationCount(groups);
+  const overLimit = total > MAX_BATCH_PROMPTS;
+
+  return (
+    <div className="mb-3 overflow-hidden rounded-[14px] border border-line bg-ink/35 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]">
+      <div className="flex items-center justify-between border-b border-line bg-white/[0.025] px-3 py-2">
+        <span className="text-[10px] text-fg-mute">每个分类取一项，自动生成全部组合</span>
+        <span className={cn(
+          "rounded-full px-2 py-0.5 text-[10px] tabular-nums",
+          overLimit ? "bg-danger/10 text-danger" : "bg-white/[0.055] text-fg-dim",
+        )}>
+          {optionCounts.length ? optionCounts.join(" × ") : "0"} = {total} 组
+        </span>
+      </div>
+      <div className="nowheel max-h-[410px] space-y-2.5 overflow-y-auto overscroll-contain p-2.5">
+        {groups.map((group, groupIndex) => (
+          <section key={group.id} className="rounded-[12px] border border-line bg-white/[0.02] p-2.5">
+            <div className="mb-2.5 flex items-center gap-2">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.035] text-[9px] tabular-nums text-fg-mute">
+                {String(groupIndex + 1).padStart(2, "0")}
+              </span>
+              <input
+                value={group.name}
+                onChange={(event) => onRenameGroup(group.id, event.target.value)}
+                aria-label={`分类 ${groupIndex + 1} 名称`}
+                className="tf-name-input h-7 min-w-0 flex-1 rounded-md bg-transparent px-1 text-[12px] font-medium text-fg placeholder:text-fg-mute"
+                placeholder={`分类 ${groupIndex + 1}`}
+              />
+              <span className="text-[9px] tabular-nums text-fg-mute">{optionCounts[groupIndex]} 个有效选项</span>
+              <button
+                type="button"
+                title={groups.length <= 2 ? "至少保留两个分类" : "删除分类"}
+                disabled={groups.length <= 2}
+                onClick={() => onRemoveGroup(group.id)}
+                className="flex h-7 w-7 items-center justify-center rounded-full text-fg-mute transition-colors hover:bg-danger/10 hover:text-danger disabled:pointer-events-none disabled:opacity-30"
+              >
+                <Icon name="Trash" size={11} />
+              </button>
+            </div>
+            <div className="nowheel flex gap-2 overflow-x-auto pb-1">
+              {group.options.filter(combinationOptionIsValid).map((option, optionIndex) => (
+                <CombinationOptionCard
+                  key={option.id}
+                  groupId={group.id}
+                  option={option}
+                  index={optionIndex}
+                  onRemove={onRemoveOption}
+                />
+              ))}
+              <label className="flex aspect-square w-[132px] shrink-0 cursor-pointer flex-col items-center justify-center gap-2 rounded-[12px] border border-dashed border-white/12 text-[10px] text-fg-mute transition-colors hover:border-white/25 hover:bg-white/[0.035] hover:text-fg">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/[0.035]">
+                    <Icon name="Plus" size={13} weight="bold" />
+                  </span>
+                  添加图片
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    multiple
+                    className="hidden"
+                    onChange={(event) => {
+                      if (event.target.files?.length) onAddImages(group.id, event.target.files);
+                      event.currentTarget.value = "";
+                    }}
+                  />
+              </label>
+            </div>
+          </section>
+        ))}
+        <button
+          type="button"
+          disabled={groups.length >= MAX_COMBINATION_GROUPS}
+          onClick={onAddGroup}
+          className="flex h-10 w-full items-center justify-center gap-1.5 rounded-[11px] border border-dashed border-white/12 text-[10px] text-fg-mute transition-colors hover:border-white/25 hover:bg-white/[0.03] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Icon name="Plus" size={11} weight="bold" />
+          {groups.length >= MAX_COMBINATION_GROUPS ? `最多 ${MAX_COMBINATION_GROUPS} 个分类` : "新增分类"}
+        </button>
+      </div>
+      <div className={cn(
+        "border-t border-line px-3 py-2 text-[10px]",
+        overLimit ? "bg-danger/[0.06] text-danger" : "text-fg-mute",
+      )}>
+        {overLimit ? `当前超过 ${MAX_BATCH_PROMPTS} 组上限，请减少图片` : "每个分类仅使用图片；一次可多选上传"}
+      </div>
+    </div>
+  );
+}
 
 const resizePromptTextarea = (textarea: HTMLTextAreaElement) => {
   textarea.style.height = "0px";
@@ -220,6 +499,7 @@ function GeneratedImageResult({
   const nodeWidth = data.width || 470;
   const nodeHeight = data.height ?? nodeWidth;
   const urls = data.urls.length ? data.urls : data.url ? [data.url] : [];
+  const resultLabels = Array.isArray(data.resultLabels) ? data.resultLabels : [];
   const running = data.status === "running";
 
   return (
@@ -261,7 +541,11 @@ function GeneratedImageResult({
               {Math.round(data.progress)}<span className="ml-0.5 text-[14px] font-normal text-fg-mute">%</span>
             </div>
             <div className="relative mt-1 text-[11px] tracking-[0.08em] text-fg-dim">
-              {progressStageLabel(data.progress)}
+              {data.combinationEnabled && (data.batchSize ?? 0) > 0
+                ? `${data.batchSize} 个组合并发生成中`
+                : (data.batchSize ?? 1) > 1
+                  ? `${data.batchSize} 套提示词并发生成中`
+                  : progressStageLabel(data.progress)}
             </div>
             <button
               type="button"
@@ -278,13 +562,33 @@ function GeneratedImageResult({
           </div>
         ) : data.status === "success" && urls.length ? (
           <>
+            {urls.length > 1 ? (
+              <span className="pointer-events-none absolute right-2.5 top-2.5 z-10 rounded-full border border-white/10 bg-ink/75 px-2 py-1 text-[10px] tabular-nums text-fg-dim shadow-[0_6px_18px_rgba(0,0,0,.28)] backdrop-blur">
+                同批 {urls.length} 张
+              </span>
+            ) : null}
             {urls.length === 1 ? (
-              <img src={urls[0]} alt="生成结果" className="h-full w-full object-contain" draggable={false} />
+              <>
+                <img src={urls[0]} alt="生成结果" className="h-full w-full object-contain" draggable={false} />
+                {resultLabels[0] ? (
+                  <span className="pointer-events-none absolute inset-x-2.5 bottom-2.5 truncate rounded-full border border-white/10 bg-ink/78 px-2.5 py-1.5 text-center text-[10px] text-fg-dim shadow-[0_6px_18px_rgba(0,0,0,.28)] backdrop-blur">
+                    {resultLabels[0]}
+                  </span>
+                ) : null}
+              </>
             ) : (
-              <div className={cn("absolute inset-1.5 grid gap-1.5", urls.length <= 4 ? "grid-cols-2" : "grid-cols-3")}>
+              <div className={cn(
+                "absolute inset-1.5 grid content-start gap-1.5 overflow-y-auto overscroll-contain pr-1",
+                urls.length <= 4 ? "grid-cols-2" : "grid-cols-3",
+              )}>
                 {urls.map((url, index) => (
-                  <div key={`${index}-${url.slice(0, 24)}`} className="min-h-0 overflow-hidden rounded-[8px] bg-ink">
-                    <img src={url} alt={`生成结果 ${index + 1}`} className="h-full w-full object-cover" draggable={false} />
+                  <div key={`${index}-${url.slice(0, 24)}`} className="relative aspect-square min-h-0 overflow-hidden rounded-[8px] bg-ink">
+                    <img src={url} alt={`生成结果 ${index + 1}`} loading="lazy" className="h-full w-full object-contain p-1" draggable={false} />
+                    {resultLabels[index] ? (
+                      <span title={resultLabels[index]} className="pointer-events-none absolute inset-x-1.5 bottom-1.5 truncate rounded-full bg-ink/76 px-2 py-1 text-center text-[8px] text-fg-dim backdrop-blur">
+                        {resultLabels[index]}
+                      </span>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -338,13 +642,83 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   const [stickerSrc, setStickerSrc] = useState<string | null>(null);
   const rf = useReactFlow();
 
-  const submitGeneration = async () => {
+  const submitGeneration = useCallback(async () => {
     const resultNodeId = await generateImage(id);
     if (!resultNodeId) return;
     window.setTimeout(() => {
       void rf.fitView({ nodes: [{ id }, { id: resultNodeId }], padding: 0.16, maxZoom: 1, duration: 520 });
     }, 80);
-  };
+  }, [generateImage, id, rf]);
+
+  const setBatchPrompt = useCallback((index: number, value: string) => {
+    const current = useStudio.getState().nodes.find((node) => node.id === id)?.data as ImageNodeData | undefined;
+    if (!current) return;
+    const prompts = normalizeBatchPrompts(current);
+    prompts[index] = value;
+    updateNode(id, { batchPrompts: prompts });
+  }, [id, updateNode]);
+
+  const addBatchPrompt = useCallback(() => {
+    const current = useStudio.getState().nodes.find((node) => node.id === id)?.data as ImageNodeData | undefined;
+    if (!current) return;
+    const prompts = normalizeBatchPrompts(current);
+    if (prompts.length >= MAX_BATCH_PROMPTS) {
+      showToast("批量提示词最多 100 套", "info");
+      return;
+    }
+    updateNode(id, { batchPrompts: [...prompts, ""] });
+  }, [id, showToast, updateNode]);
+
+  const removeBatchPrompt = useCallback((index: number) => {
+    const current = useStudio.getState().nodes.find((node) => node.id === id)?.data as ImageNodeData | undefined;
+    if (!current) return;
+    const prompts = normalizeBatchPrompts(current);
+    if (prompts.length <= DEFAULT_BATCH_PROMPT_COUNT) return;
+    updateNode(id, { batchPrompts: prompts.filter((_, promptIndex) => promptIndex !== index) });
+  }, [id, updateNode]);
+
+  const mutateCombinationGroups = useCallback((mutate: (groups: CombinationGroup[]) => CombinationGroup[]) => {
+    const current = useStudio.getState().nodes.find((node) => node.id === id)?.data as ImageNodeData | undefined;
+    if (!current) return;
+    const groups = Array.isArray(current.combinationGroups) ? current.combinationGroups : [];
+    updateNode(id, { combinationGroups: mutate(groups) });
+  }, [id, updateNode]);
+
+  const renameCombinationGroup = useCallback((groupId: string, name: string) => {
+    mutateCombinationGroups((groups) => groups.map((group) => group.id === groupId ? { ...group, name } : group));
+  }, [mutateCombinationGroups]);
+
+  const removeCombinationGroup = useCallback((groupId: string) => {
+    mutateCombinationGroups((groups) => groups.length <= 2 ? groups : groups.filter((group) => group.id !== groupId));
+  }, [mutateCombinationGroups]);
+
+  const addCombinationGroup = useCallback(() => {
+    mutateCombinationGroups((groups) => groups.length >= MAX_COMBINATION_GROUPS
+      ? groups
+      : [...groups, createCombinationGroup(groups.length)]);
+  }, [mutateCombinationGroups]);
+
+  const addCombinationImages = useCallback((groupId: string, files: FileList) => {
+    const imageFiles = Array.from(files).filter(isImageFile);
+    if (!imageFiles.length) {
+      showToast("请选择 PNG、JPG 或 WebP 图片", "error");
+      return;
+    }
+    void Promise.all(imageFiles.map(fileToDataURL))
+      .then((images) => {
+        const options = images.map((image) => ({ id: combinationUid("option"), image }));
+        mutateCombinationGroups((groups) => groups.map((group) => group.id === groupId
+          ? { ...group, options: [...group.options, ...options] }
+          : group));
+      })
+      .catch(() => showToast("组合图片读取失败", "error"));
+  }, [mutateCombinationGroups, showToast]);
+
+  const removeCombinationOption = useCallback((groupId: string, optionId: string) => {
+    mutateCombinationGroups((groups) => groups.map((group) => group.id === groupId
+      ? { ...group, options: group.options.filter((option) => option.id !== optionId) }
+      : group));
+  }, [mutateCombinationGroups]);
 
   useEffect(() => {
     if (popover === "none") return;
@@ -443,6 +817,10 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   }, 0);
 
   const combo = comboError(d.model, d.resolution, d.billing, d.aspectRatio);
+  const batchPrompts = d.batchPromptEnabled ? normalizeBatchPrompts(d) : [];
+  const filledBatchPromptCount = batchPrompts.filter((prompt) => prompt.trim()).length;
+  const combinationGroups = d.combinationEnabled && Array.isArray(d.combinationGroups) ? d.combinationGroups : [];
+  const totalCombinationCount = combinationCount(combinationGroups);
   const styleLabel = STYLE_PRESETS.find((s) => s.id === d.styleId)?.label ?? "风格";
   const ownImageUrls = d.urls.length ? d.urls : d.url ? [d.url] : [];
   const canAddImages = ownImageUrls.length < MAX_IMAGE_REFERENCES;
@@ -671,7 +1049,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
                   <img
                     src={displayUrl}
                     alt={`参考图 ${index + 1}${hasEditPreview ? "，已标记局部编辑范围" : ""}`}
-                    className="h-full w-full object-cover transition-transform duration-300 group-hover/gallery:scale-[1.035]"
+                    className="h-full w-full object-contain"
                     draggable={false}
                   />
                 </button>
@@ -808,7 +1186,10 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
         <div
           role="dialog"
           aria-label={ownImageUrls.length ? "图片生成设置" : "文生图设置"}
-          className="relative left-1/2 mt-3 w-[calc(100%+192px)] -translate-x-1/2 rounded-[18px] border border-line bg-card p-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.24)] nodrag"
+          className={cn(
+            "relative left-1/2 mt-3 -translate-x-1/2 rounded-[18px] border border-line bg-card p-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.24)] nodrag",
+            d.combinationEnabled ? "w-[calc(100%+360px)]" : "w-[calc(100%+192px)]",
+          )}
           onMouseDown={(e) => e.stopPropagation()}
         >
         <div className="mb-3 flex items-center gap-1.5">
@@ -823,29 +1204,109 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
               {styleLabel}
             </Chip>
           </div>
+          <Chip
+            active={Boolean(d.batchPromptEnabled)}
+            onClick={() => {
+              const prompts = normalizeBatchPrompts(d);
+              if (d.batchPromptEnabled) {
+                updateNode(id, {
+                  batchPromptEnabled: false,
+                  batchPrompts: prompts,
+                  prompt: prompts.find((item) => item.trim()) ?? d.prompt,
+                });
+              } else {
+                updateNode(id, { batchPromptEnabled: true, batchPrompts: prompts, combinationEnabled: false });
+              }
+            }}
+            title="每段提示词独立并发生成，结果合并到同一图片节点"
+          >
+            <Icon name="ListNumbers" size={11} />
+            批量提示词{d.batchPromptEnabled ? ` ${filledBatchPromptCount}/${batchPrompts.length}` : ""}
+          </Chip>
+          <Chip
+            active={Boolean(d.combinationEnabled)}
+            onClick={() => {
+              if (d.combinationEnabled) {
+                updateNode(id, { combinationEnabled: false });
+                return;
+              }
+              const currentGroups = Array.isArray(d.combinationGroups) ? d.combinationGroups : [];
+              const groups = currentGroups.length >= 2
+                ? currentGroups
+                : [createCombinationGroup(0), createCombinationGroup(1)];
+              updateNode(id, {
+                combinationEnabled: true,
+                combinationGroups: groups,
+                batchPromptEnabled: false,
+              });
+            }}
+            title="从每个自定义分类中选取一项，生成全部组合"
+          >
+            <Icon name="SquaresFour" size={11} />
+            组合生图{d.combinationEnabled ? ` ${totalCombinationCount}` : ""}
+          </Chip>
         </div>
 
-        <textarea
-          ref={promptRef}
-          value={d.prompt}
-          onChange={(e) => {
-            promptHeightRef.current = resizePromptTextarea(e.currentTarget);
-            promptValueRef.current = e.currentTarget.value;
-            promptMeasuredRef.current = true;
-            persistedPromptHeightRef.current = promptHeightRef.current;
-            updateNode(id, { prompt: e.target.value, promptHeight: promptHeightRef.current });
-          }}
-          onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-              e.preventDefault();
-              void submitGeneration();
-            }
-          }}
-          placeholder="可直接文字生图，或上传/连入图片后输入指令进行编辑，如：将背景改为雪夜"
-          rows={3}
-          className="tf-composer-prompt nodrag nowheel mb-3 w-full resize-none overflow-y-auto border-none bg-transparent text-[13px] leading-relaxed text-fg outline-none placeholder:text-fg-mute"
-          spellCheck={false}
-        />
+        {d.combinationEnabled ? (
+          <>
+            <div className="mb-1.5 flex items-center justify-between px-0.5">
+              <span className="text-[10px] font-medium tracking-wide text-fg-mute">通用提示词</span>
+              <span className="text-[9px] text-fg-mute/70">每个组合都会使用，不添加业务预设</span>
+            </div>
+            <textarea
+              value={d.prompt}
+              onChange={(event) => updateNode(id, { prompt: event.target.value })}
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                  event.preventDefault();
+                  void submitGeneration();
+                }
+              }}
+              placeholder="描述如何使用各个分类中的图片，不会添加任何业务预设"
+              rows={2}
+              className="tf-composer-prompt nodrag nowheel mb-3 min-h-[62px] max-h-[150px] w-full resize-y rounded-[12px] border border-line bg-white/[0.025] px-3 py-2.5 text-[12px] leading-relaxed text-fg outline-none placeholder:text-fg-mute/70"
+              spellCheck={false}
+            />
+            <CombinationBuilder
+              groups={combinationGroups}
+              onRenameGroup={renameCombinationGroup}
+              onRemoveGroup={removeCombinationGroup}
+              onAddGroup={addCombinationGroup}
+              onAddImages={addCombinationImages}
+              onRemoveOption={removeCombinationOption}
+            />
+          </>
+        ) : d.batchPromptEnabled ? (
+          <BatchPromptEditor
+            prompts={batchPrompts}
+            onChange={setBatchPrompt}
+            onAdd={addBatchPrompt}
+            onRemove={removeBatchPrompt}
+            onSubmit={submitGeneration}
+          />
+        ) : (
+          <textarea
+            ref={promptRef}
+            value={d.prompt}
+            onChange={(e) => {
+              promptHeightRef.current = resizePromptTextarea(e.currentTarget);
+              promptValueRef.current = e.currentTarget.value;
+              promptMeasuredRef.current = true;
+              persistedPromptHeightRef.current = promptHeightRef.current;
+              updateNode(id, { prompt: e.target.value, promptHeight: promptHeightRef.current });
+            }}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                void submitGeneration();
+              }
+            }}
+            placeholder="可直接文字生图，或上传/连入图片后输入指令进行编辑，如：将背景改为雪夜"
+            rows={3}
+            className="tf-composer-prompt nodrag nowheel mb-3 w-full resize-none overflow-y-auto border-none bg-transparent text-[13px] leading-relaxed text-fg outline-none placeholder:text-fg-mute"
+            spellCheck={false}
+          />
+        )}
 
         <div className="flex items-center justify-between gap-1">
           <div className="flex min-w-0 items-center gap-1">
@@ -875,7 +1336,13 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
           </div>
           <button
             type="button"
-            title={combo ?? "生成 (Ctrl+Enter)"}
+            title={combo ?? (
+              d.combinationEnabled
+                ? `生成 ${totalCombinationCount} 个组合 (Ctrl+Enter)`
+                : d.batchPromptEnabled
+                  ? `并发生成 ${filledBatchPromptCount} 套提示词 (Ctrl+Enter)`
+                  : "生成 (Ctrl+Enter)"
+            )}
             disabled={!!combo}
             onClick={() => void submitGeneration()}
             className={cn(
