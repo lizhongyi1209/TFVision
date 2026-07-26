@@ -29,7 +29,6 @@ import {
   type VideoNodeData,
   type WorkspaceFile,
 } from "./types";
-import { styleSuffix } from "./models";
 import { downscaleImageSrc, fakeProgressCurve } from "./utils";
 
 export type AppNode = Node<TextNodeData | ImageNodeData | VideoNodeData | GroupNodeData>;
@@ -606,7 +605,6 @@ export const useStudio = create<StudioState>((set, get) => ({
         refSrcs.push(...sources);
       }
     }
-    const suffix = styleSuffix(data.styleId);
     const hasEditGuide = Boolean(
       data.editGuide &&
       data.editMask &&
@@ -672,7 +670,7 @@ export const useStudio = create<StudioState>((set, get) => ({
           return `${groupName} ${optionIndex}`;
         }));
         return {
-          prompt: [...textParts, data.prompt.trim(), mapping, suffix, useEditGuide ? localEditInstruction : ""].filter(Boolean).join("\n\n"),
+          prompt: [...textParts, data.prompt.trim(), mapping, useEditGuide ? localEditInstruction : ""].filter(Boolean).join("\n\n"),
           sources,
           label: labelParts.join(" · "),
         };
@@ -696,7 +694,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (hasEditGuide && data.editGuide) sources.push(data.editGuide);
       requests = ownPrompts
         .map((own) => ({
-          prompt: [...textParts, own, suffix, localEditInstruction].filter(Boolean).join("\n\n"),
+          prompt: [...textParts, own, localEditInstruction].filter(Boolean).join("\n\n"),
           sources,
         }))
         .filter((request) => Boolean(request.prompt));

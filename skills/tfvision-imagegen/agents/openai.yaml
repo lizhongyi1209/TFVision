@@ -1,0 +1,4 @@
+interface:
+  display_name: "TFVision 快速生图"
+  short_description: "Windows/macOS 配置一次即可用 Banana 或 GPT Image 2 生图"
+  default_prompt: "Use $tfvision-imagegen to generate an image from my prompt."

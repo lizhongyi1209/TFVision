@@ -37,6 +37,14 @@ export interface JobStatusResponse {
   error?: string;
 }
 
+export interface AgentImagePlan {
+  prompt: string;
+  aspectRatio: string;
+  resolution: Resolution;
+  count: number;
+  note: string;
+}
+
 export interface GenMeta {
   prompt: string;
   model: ModelName;
