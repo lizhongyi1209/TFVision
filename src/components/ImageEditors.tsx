@@ -103,6 +103,201 @@ function EditorFrame({
   );
 }
 
+export type ImageCompareCandidate = {
+  id: string;
+  src: string;
+  label: string;
+};
+
+export function ImageCompareViewer({
+  images,
+  initialLeftId,
+  initialRightId,
+  onClose,
+}: {
+  images: ImageCompareCandidate[];
+  initialLeftId?: string;
+  initialRightId?: string;
+  onClose: () => void;
+}) {
+  const initialLeft = images.find((image) => image.id === initialLeftId)?.id ?? images[0]?.id ?? "";
+  const initialRight =
+    images.find((image) => image.id === initialRightId && image.id !== initialLeft)?.id ??
+    images.find((image) => image.id !== initialLeft)?.id ??
+    initialLeft;
+  const [leftId, setLeftId] = useState(initialLeft);
+  const [rightId, setRightId] = useState(initialRight);
+  const [selecting, setSelecting] = useState<"left" | "right">("right");
+  const [position, setPosition] = useState(50);
+  const left = images.find((image) => image.id === leftId) ?? images[0];
+  const right = images.find((image) => image.id === rightId) ?? images[1] ?? images[0];
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+      if (event.key.toLowerCase() === "r") setPosition(50);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  if (typeof document === "undefined" || !left || !right) return null;
+
+  const selectImage = (id: string) => {
+    if (selecting === "left") {
+      if (id === rightId && leftId !== rightId) setRightId(leftId);
+      setLeftId(id);
+      setSelecting("right");
+      return;
+    }
+    if (id === leftId && leftId !== rightId) setLeftId(rightId);
+    setRightId(id);
+  };
+
+  const swap = () => {
+    setLeftId(rightId);
+    setRightId(leftId);
+    setPosition((current) => 100 - current);
+  };
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[210] flex items-center justify-center bg-black/76 p-5 backdrop-blur-md"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="图片对比"
+        className="tf-editor-enter flex h-[min(800px,calc(100vh-40px))] w-[min(1220px,calc(100vw-40px))] flex-col overflow-hidden rounded-[20px] border border-white/12 bg-[#111113] shadow-[0_34px_100px_rgba(0,0,0,0.72)]"
+      >
+        <header className="flex h-[72px] shrink-0 items-center justify-between border-b border-line px-5">
+          <div>
+            <div className="flex items-center gap-2 text-[14px] font-medium text-fg">
+              <Icon name="Swap" size={14} />
+              图片对比
+            </div>
+            <div className="mt-1 text-[11px] text-fg-mute">拖动分隔线查看差异；按 R 可回到中间位置。</div>
+          </div>
+          <button
+            type="button"
+            aria-label="关闭图片对比"
+            onClick={onClose}
+            className="flex h-9 w-9 items-center justify-center rounded-full text-fg-mute transition-colors hover:bg-white/[0.06] hover:text-fg"
+          >
+            <Icon name="X" size={15} />
+          </button>
+        </header>
+        <div className="flex min-h-0 flex-1">
+          <div className="relative min-w-0 flex-1 overflow-hidden bg-[#080809]">
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.04),transparent_62%)]" />
+            <img src={left.src} alt={left.label} className="absolute inset-0 h-full w-full select-none object-contain p-5" draggable={false} />
+            <div
+              className="absolute inset-0 overflow-hidden"
+              style={{ clipPath: `inset(0 ${100 - position}% 0 0)` }}
+            >
+              <img src={right.src} alt={right.label} className="absolute inset-0 h-full w-full select-none object-contain p-5" draggable={false} />
+            </div>
+            <span className="pointer-events-none absolute left-4 top-4 max-w-[42%] truncate rounded-full border border-white/10 bg-black/64 px-3 py-1.5 text-[10px] text-white/78 shadow-lg backdrop-blur-md">
+              左 · {left.label}
+            </span>
+            <span className="pointer-events-none absolute right-4 top-4 max-w-[42%] truncate rounded-full border border-white/10 bg-black/64 px-3 py-1.5 text-[10px] text-white/78 shadow-lg backdrop-blur-md">
+              右 · {right.label}
+            </span>
+            <div className="pointer-events-none absolute inset-y-0 z-10 w-px bg-white/90 shadow-[0_0_16px_rgba(255,255,255,0.42)]" style={{ left: `${position}%` }}>
+              <span className="absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-white/65 bg-[#171719]/92 text-white shadow-[0_8px_28px_rgba(0,0,0,0.5)] backdrop-blur">
+                <Icon name="Swap" size={15} />
+              </span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="0.25"
+              value={position}
+              onChange={(event) => setPosition(Number(event.target.value))}
+              onDoubleClick={() => setPosition(50)}
+              aria-label="图片对比分隔线"
+              className="absolute inset-0 z-20 h-full w-full cursor-ew-resize opacity-0"
+            />
+            <span className="pointer-events-none absolute bottom-4 left-1/2 z-30 -translate-x-1/2 rounded-full border border-white/10 bg-black/68 px-2.5 py-1 text-[9px] tabular-nums text-white/65 backdrop-blur">
+              {Math.round(position)} / {Math.round(100 - position)}
+            </span>
+          </div>
+          <aside className="w-[252px] shrink-0 overflow-y-auto border-l border-line bg-[#151517] p-4">
+            <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-fg-mute">对比两侧</div>
+            <div className="grid grid-cols-2 gap-1.5">
+              {(["left", "right"] as const).map((side) => {
+                const image = side === "left" ? left : right;
+                return (
+                  <button
+                    key={side}
+                    type="button"
+                    onClick={() => setSelecting(side)}
+                    className={cn(
+                      "min-w-0 rounded-[10px] border px-2.5 py-2 text-left transition-colors",
+                      selecting === side
+                        ? "border-white/25 bg-white/[0.08] text-fg"
+                        : "border-line bg-white/[0.02] text-fg-mute hover:border-line-2 hover:text-fg",
+                    )}
+                  >
+                    <span className="block text-[9px]">{side === "left" ? "左侧" : "右侧"}</span>
+                    <span className="mt-0.5 block truncate text-[10px]">{image.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={swap}
+              className="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-[10px] border border-line bg-white/[0.025] text-[10px] text-fg-dim transition-colors hover:border-white/20 hover:bg-white/[0.055] hover:text-fg"
+            >
+              <Icon name="Swap" size={11} />
+              交换左右
+            </button>
+            <div className="mb-2 mt-5 text-[10px] font-medium uppercase tracking-[0.12em] text-fg-mute">
+              选择{selecting === "left" ? "左侧" : "右侧"}图片
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {images.map((image) => {
+                const selected = image.id === (selecting === "left" ? leftId : rightId);
+                return (
+                  <button
+                    key={image.id}
+                    type="button"
+                    title={image.label}
+                    onClick={() => selectImage(image.id)}
+                    className={cn(
+                      "group relative aspect-square overflow-hidden rounded-[10px] border bg-black/25 transition-[border-color,transform]",
+                      selected ? "border-white/60" : "border-white/[0.08] hover:border-white/25",
+                    )}
+                  >
+                    <img src={image.src} alt="" loading="lazy" className="h-full w-full object-contain p-1" draggable={false} />
+                    <span className="pointer-events-none absolute inset-x-1 bottom-1 truncate rounded bg-black/72 px-1.5 py-1 text-[8px] text-white/72 backdrop-blur">
+                      {image.label}
+                    </span>
+                    {selected ? (
+                      <span className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-white text-black shadow-lg">
+                        <Icon name="Check" size={9} weight="bold" />
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-4 rounded-[10px] border border-line bg-white/[0.025] p-3 text-[9px] leading-relaxed text-fg-mute">
+              对比功能只用于查看，不会修改或覆盖节点中的图片。
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 const CROP_RATIOS = [
   { label: "自由", value: null },
   { label: "1:1", value: 1 },

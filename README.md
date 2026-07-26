@@ -40,6 +40,9 @@ npm run build && npm run start   # 生产模式（推荐，更快）
 - **多图参考**：多个图片节点连入同一生成节点 = 多图参考（底图 + 最多 8 张参考，顺序即「第 N 张图」）
 - **批量出图**：单节点 1/2/4 张，胶片条切换选用
 - **断点续跑**：刷新页面后仍在运行的任务自动恢复轮询
+- **内置 Agent**：固定通过 New API 的 `/v1/responses` 调用内置 Agent，与生成任务共用设置中的令牌，不依赖官方账号或客户本机 CLI
+- **视频理解**：上传时只加载并预览视频；用户发送消息后才按需在浏览器本地完成视频分析，界面仅呈现“正在分析视频”，原始视频不会上传到 Agent 接口
+- **Agent 图片历史**：对话元数据保存在 localStorage，图片内容单独保存在 IndexedDB；消息内按图片原始比例完整展示，打开历史对话时按需恢复预览与再次发送能力
 
 ## 模型（复用 TVision / o1key）
 
@@ -58,6 +61,7 @@ TFvision/
 │  │     ├─ jobs/            POST 提交生图 · [id] GET 轮询并落盘 output/
 │  │     ├─ video/           jobs 提交 · jobs/[taskId] 轮询 · save 本地保存 · upload 预签名直传
 │  │     ├─ reverse-prompt/  视觉反推（chat/completions）
+│  │     ├─ agent/           固定 gpt-5.6-sol 的 New API Responses Agent
 │  │     ├─ settings/        GET/POST 设置 · test 连接探测
 │  │     ├─ media/[name]     读取 output/ 下生成的图片/视频
 │  │     ├─ history/         历史列表 / 删除
@@ -71,6 +75,7 @@ TFvision/
 ## 架构要点
 
 - **单栈本地应用**：Next.js 15 (App Router) + React 19 + TypeScript + Tailwind v4 + @xyflow/react (React Flow 12) + Zustand + Motion。Route Handlers 即本地后端 —— 令牌不进浏览器、天然绕过 CORS、承接大体积 base64。
+- **Agent 鉴权**：服务端直接使用设置中的 New API Bearer Token 调用模型接口，不启动任何模型 CLI，也不读取客户的官方账号登录状态。
 - **o1key 异步生图**：`POST /async/v1/generateImage` → `task_id`，轮询 `GET /async/v1/tasks/{id}`，成功后下载到 `output/` 经 `/api/media` 提供，自动进历史。
 - **视频**：可灵 `image2video` / `omni-video` + Seedance 统一协议 `/v1/video/generations`；参考图先经网关预签名上传拿公网 URL；成片下载到本地 `output/video-<taskId>.mp4`。
 - **画布持久化**：整个工作区（多画布 + 节点 + 连线 + 命名计数）防抖写入 `data/boards.json`，刷新不丢。

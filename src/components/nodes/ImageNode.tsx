@@ -2,7 +2,7 @@
 
 // 图片节点 — the workhorse. Card shows empty-state hints / the generated
 // image / upload preview; a composer docked under the card carries prompt,
-// model picker, 比例·画质·张数 popover, style preset, and submit (libTV-style).
+// model picker, 比例·画质·张数 popover, and submit (libTV-style).
 
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useKeyPress, useReactFlow, type NodeProps } from "@xyflow/react";
@@ -24,19 +24,44 @@ import {
   GPT_IMAGE_2_RATIOS,
   MODELS,
   QUALITY_OPTIONS,
-  STYLE_PRESETS,
   comboError,
   modelLabel,
   resolutionsFor,
 } from "@/lib/models";
 import { cn, fileToDataURL, progressStageLabel } from "@/lib/utils";
 import { Icon } from "../icons";
-import { BrushEditor, CropEditor, StickerEditor } from "../ImageEditors";
+import { BrushEditor, CropEditor, ImageCompareViewer, StickerEditor, type ImageCompareCandidate } from "../ImageEditors";
 import { NodeShell, RunningVeil } from "./NodeShell";
 import { Chip } from "../ui";
 
 const isImageFile = (file: File) =>
   file.type.startsWith("image/") || /\.(?:png|jpe?g|webp)$/i.test(file.name);
+
+function canvasImageCompareCandidates(
+  nodes: AppNode[],
+  excludedNodeIds: Set<string>,
+  excludedSources: Set<string>,
+) {
+  const candidates: ImageCompareCandidate[] = [];
+  const seenSources = new Set(excludedSources);
+  for (const node of nodes) {
+    if (node.type !== "image" || excludedNodeIds.has(node.id)) continue;
+    const data = node.data as ImageNodeData;
+    const sources = data.urls.length ? data.urls : data.url ? [data.url] : [];
+    for (let index = 0; index < sources.length; index += 1) {
+      const src = sources[index];
+      if (!src || seenSources.has(src)) continue;
+      seenSources.add(src);
+      candidates.push({
+        id: `canvas-${node.id}-${index}`,
+        src,
+        label: sources.length > 1 ? `${data.label} · ${index + 1}` : data.label,
+      });
+      if (candidates.length >= 24) return candidates;
+    }
+  }
+  return candidates;
+}
 
 const isMultiSelectClick = (event: Pick<React.MouseEvent, "ctrlKey" | "metaKey" | "shiftKey">) =>
   event.ctrlKey || event.metaKey || event.shiftKey;
@@ -497,35 +522,6 @@ function ModelPopover({ data, nodeId, onClose }: { data: ImageNodeData; nodeId: 
   );
 }
 
-function StylePopover({ data, nodeId, onClose }: { data: ImageNodeData; nodeId: string; onClose: () => void }) {
-  const updateNode = useStudio((s) => s.updateNode);
-  return (
-    <div
-      className="glass popover-enter absolute bottom-full left-0 z-30 mb-2 w-[260px] origin-bottom-left rounded-panel p-2"
-      onMouseDown={(e) => e.stopPropagation()}
-    >
-      <div className="px-2 pb-1 pt-1 text-[11px] font-medium text-fg-mute">风格预设 · TFvision</div>
-      {STYLE_PRESETS.map((s) => (
-        <button
-          key={s.id}
-          type="button"
-          onClick={() => {
-            updateNode(nodeId, { styleId: s.id });
-            onClose();
-          }}
-          className={cn(
-            "flex w-full flex-col rounded-control px-3 py-2 text-left transition-colors",
-            data.styleId === s.id ? "bg-accent/10 text-accent" : "text-fg hover:bg-white/5",
-          )}
-        >
-          <span className="text-[13px]">{s.label}</span>
-          <span className="text-[11px] text-fg-mute">{s.hint}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function GeneratedImageResult({
   id,
   selected,
@@ -536,17 +532,63 @@ function GeneratedImageResult({
   data: ImageNodeData;
 }) {
   const cancelImageGeneration = useStudio((s) => s.cancelImageGeneration);
+  const nodes = useStudio((s) => s.nodes);
+  const compareFileRef = useRef<HTMLInputElement>(null);
   const [focusedResultIndex, setFocusedResultIndex] = useState<number | null>(null);
+  const [resultActionsVisible, setResultActionsVisible] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [externalCompareImage, setExternalCompareImage] = useState<ImageCompareCandidate | null>(null);
   const nodeWidth = data.width || 470;
   const nodeHeight = data.height ?? nodeWidth;
   const urls = data.urls.length ? data.urls : data.url ? [data.url] : [];
   const resultLabels = Array.isArray(data.resultLabels) ? data.resultLabels : [];
   const focusedResultUrl = focusedResultIndex === null ? null : urls[focusedResultIndex] ?? null;
   const running = data.status === "running";
+  const activeResultIndex = focusedResultIndex ?? Math.max(0, Math.min(urls.length - 1, data.activeIndex ?? 0));
+  const sourceNode = data.generationSourceId
+    ? nodes.find((node) => node.id === data.generationSourceId && node.type === "image")
+    : undefined;
+  const sourceData = sourceNode?.data as ImageNodeData | undefined;
+  const sourceUrls = sourceData?.urls.length ? sourceData.urls : sourceData?.url ? [sourceData.url] : [];
+  const sourceCandidates: ImageCompareCandidate[] = sourceUrls.map((src, index) => ({
+    id: `source-${sourceNode?.id ?? "unknown"}-${index}`,
+    src,
+    label: sourceUrls.length > 1 ? `生成前 ${index + 1}` : "生成前",
+  }));
+  const resultCandidates: ImageCompareCandidate[] = urls.map((src, index) => ({
+    id: `result-${id}-${index}`,
+    src,
+    label: resultLabels[index] || (urls.length > 1 ? `生成结果 ${index + 1}` : "生成结果"),
+  }));
+  const canvasCandidates = canvasImageCompareCandidates(
+    nodes,
+    new Set([id, ...(sourceNode ? [sourceNode.id] : [])]),
+    new Set([...sourceUrls, ...urls]),
+  );
+  const compareCandidates = externalCompareImage
+    ? [...sourceCandidates, ...resultCandidates, ...canvasCandidates, externalCompareImage]
+    : [...sourceCandidates, ...resultCandidates, ...canvasCandidates];
+  const activeResultCandidateId = resultCandidates[activeResultIndex]?.id;
+  const initialSourceCandidateId =
+    sourceCandidates[0]?.id ??
+    canvasCandidates[0]?.id ??
+    resultCandidates.find((_, index) => index !== activeResultIndex)?.id;
+
+  const openResultCompare = () => {
+    if (compareCandidates.length < 2) {
+      compareFileRef.current?.click();
+      return;
+    }
+    setCompareOpen(true);
+  };
 
   useEffect(() => {
     if (focusedResultIndex !== null && focusedResultIndex >= urls.length) setFocusedResultIndex(null);
   }, [focusedResultIndex, urls.length]);
+
+  useEffect(() => {
+    if (!selected) setResultActionsVisible(false);
+  }, [selected]);
 
   return (
     <NodeShell
@@ -618,7 +660,11 @@ function GeneratedImageResult({
                 <img
                   src={focusedResultUrl}
                   alt={`生成结果 ${focusedResultIndex! + 1}`}
-                  className="h-full w-full object-contain"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setResultActionsVisible((current) => !current);
+                  }}
+                  className="h-full w-full cursor-pointer object-contain"
                   draggable={false}
                 />
                 <button
@@ -637,7 +683,16 @@ function GeneratedImageResult({
               </>
             ) : urls.length === 1 ? (
               <>
-                <img src={urls[0]} alt="生成结果" className="h-full w-full object-contain" draggable={false} />
+                <img
+                  src={urls[0]}
+                  alt="生成结果"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setResultActionsVisible((current) => !current);
+                  }}
+                  className="h-full w-full cursor-pointer object-contain"
+                  draggable={false}
+                />
                 {!data.combinationEnabled && resultLabels[0] ? (
                   <span className="pointer-events-none absolute inset-x-2.5 bottom-2.5 truncate rounded-full border border-white/10 bg-ink/78 px-2.5 py-1.5 text-center text-[10px] text-fg-dim shadow-[0_6px_18px_rgba(0,0,0,.28)] backdrop-blur">
                     {resultLabels[0]}
@@ -659,6 +714,7 @@ function GeneratedImageResult({
                       if (isMultiSelectClick(event)) return;
                       event.stopPropagation();
                       setFocusedResultIndex(index);
+                      setResultActionsVisible(true);
                     }}
                     className="nodrag group/result relative aspect-square min-h-0 overflow-hidden rounded-[8px] border border-transparent bg-ink text-left transition-[border-color,transform,box-shadow] duration-200 hover:z-[1] hover:scale-[1.012] hover:border-white/20 hover:shadow-[0_10px_28px_rgba(0,0,0,.35)] focus-visible:border-white/35 focus-visible:outline-none"
                   >
@@ -675,6 +731,21 @@ function GeneratedImageResult({
                 ))}
               </div>
             )}
+            {resultActionsVisible && (focusedResultUrl || urls.length === 1) ? (
+              <div className="nodrag absolute right-3 top-3 z-20 flex items-center rounded-full border border-white/14 bg-ink/82 p-1 shadow-[0_10px_30px_rgba(0,0,0,.42)] backdrop-blur-xl">
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    openResultCompare();
+                  }}
+                  className="flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] text-fg-dim transition-colors hover:bg-white/[0.08] hover:text-fg"
+                >
+                  <Icon name="Swap" size={12} />
+                  对比
+                </button>
+              </div>
+            ) : null}
           </>
         ) : (
           <div className="flex max-w-[78%] flex-col items-center text-center">
@@ -694,7 +765,31 @@ function GeneratedImageResult({
             </span>
           </div>
         )}
+        <input
+          ref={compareFileRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          className="hidden"
+          aria-label="选择对比图片"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.currentTarget.value = "";
+            if (!file || !isImageFile(file)) return;
+            void fileToDataURL(file).then((src) => {
+              setExternalCompareImage({ id: `external-result-${id}`, src, label: file.name });
+              setCompareOpen(true);
+            });
+          }}
+        />
       </div>
+      {compareOpen && compareCandidates.length >= 2 ? (
+        <ImageCompareViewer
+          images={compareCandidates}
+          initialLeftId={initialSourceCandidateId ?? externalCompareImage?.id}
+          initialRightId={activeResultCandidateId}
+          onClose={() => setCompareOpen(false)}
+        />
+      ) : null}
     </NodeShell>
   );
 }
@@ -709,20 +804,22 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   const nodes = useStudio((s) => s.nodes);
   const fileRef = useRef<HTMLInputElement>(null);
   const stickerFileRef = useRef<HTMLInputElement>(null);
+  const compareFileRef = useRef<HTMLInputElement>(null);
   const modelAreaRef = useRef<HTMLDivElement>(null);
   const paramAreaRef = useRef<HTMLDivElement>(null);
-  const styleAreaRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const promptHeightRef = useRef(PROMPT_MIN_HEIGHT);
   const promptValueRef = useRef(d.prompt);
   const promptMeasuredRef = useRef(false);
   const persistedPromptHeightRef = useRef(d.promptHeight);
-  const [popover, setPopover] = useState<"none" | "params" | "model" | "style">("none");
+  const [popover, setPopover] = useState<"none" | "params" | "model">("none");
   const [fileDragActive, setFileDragActive] = useState(false);
   const [focusedImageIndex, setFocusedImageIndex] = useState<number | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const [editor, setEditor] = useState<"none" | "crop" | "sticker" | "brush">("none");
   const [stickerSrc, setStickerSrc] = useState<string | null>(null);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [externalCompareImage, setExternalCompareImage] = useState<ImageCompareCandidate | null>(null);
   const rf = useReactFlow();
   const selectionModifierPressed = useKeyPress(["Control", "Meta", "Shift"]);
   const multipleNodesSelected = nodes.reduce((count, node) => count + (node.selected ? 1 : 0), 0) > 1;
@@ -809,8 +906,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   useEffect(() => {
     if (popover === "none") return;
 
-    const activeArea =
-      popover === "model" ? modelAreaRef.current : popover === "params" ? paramAreaRef.current : styleAreaRef.current;
+    const activeArea = popover === "model" ? modelAreaRef.current : paramAreaRef.current;
     const onPointerDown = (event: MouseEvent) => {
       if (activeArea?.contains(event.target as Node)) return;
       setPopover("none");
@@ -907,12 +1003,21 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   const filledBatchPromptCount = batchPrompts.filter((prompt) => prompt.trim()).length;
   const combinationGroups = d.combinationEnabled && Array.isArray(d.combinationGroups) ? d.combinationGroups : [];
   const totalCombinationCount = combinationCount(combinationGroups, ownImageUrls.length);
-  const styleLabel = STYLE_PRESETS.find((s) => s.id === d.styleId)?.label ?? "风格";
   const canAddImages = ownImageUrls.length < MAX_IMAGE_REFERENCES;
   const focusedImageUrl = focusedImageIndex === null ? null : ownImageUrls[focusedImageIndex] ?? null;
   const activeImageUrl = focusedImageUrl ?? d.url ?? ownImageUrls[0] ?? null;
   const activeImageIndex = focusedImageIndex ?? Math.max(0, Math.min(ownImageUrls.length - 1, d.activeIndex ?? 0));
   const hasActiveEditMask = Boolean(d.editGuide && d.editMask && d.editMaskImageIndex === activeImageIndex);
+  const ownNodeCompareCandidates: ImageCompareCandidate[] = ownImageUrls.map((src, index) => ({
+    id: `node-${id}-${index}`,
+    src,
+    label: ownImageUrls.length > 1 ? `节点图片 ${index + 1}` : "当前图片",
+  }));
+  const canvasCompareCandidates = canvasImageCompareCandidates(nodes, new Set([id]), new Set(ownImageUrls));
+  const nodeCompareCandidates = [...ownNodeCompareCandidates, ...canvasCompareCandidates];
+  if (externalCompareImage) nodeCompareCandidates.push(externalCompareImage);
+  const activeNodeCompareId = ownNodeCompareCandidates[activeImageIndex]?.id;
+  const otherNodeCompareId = nodeCompareCandidates.find((candidate) => candidate.id !== activeNodeCompareId)?.id;
   const activePreviewUrl = hasActiveEditMask ? d.editGuide ?? activeImageUrl : activeImageUrl;
   const galleryColumns =
     ownImageUrls.length <= 4 ? 2 : ownImageUrls.length <= 6 ? 3 : ownImageUrls.length <= 8 ? 4 : ownImageUrls.length === 9 ? 3 : 5;
@@ -1005,6 +1110,14 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
     showToast("已移除局部编辑范围", "info");
   };
 
+  const openNodeCompare = () => {
+    if (nodeCompareCandidates.length < 2) {
+      compareFileRef.current?.click();
+      return;
+    }
+    setCompareOpen(true);
+  };
+
   const quickToolbar = activeImageUrl ? (
     <div className="flex w-max flex-nowrap items-center gap-1 whitespace-nowrap rounded-full border border-line bg-panel/95 p-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.38)] backdrop-blur-xl">
       <button type="button" onClick={() => setEditor("crop")} className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] text-fg-dim transition-colors hover:bg-white/[0.07] hover:text-fg">
@@ -1018,6 +1131,10 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
       <button type="button" onClick={() => setEditor("brush")} className={cn("relative flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] transition-colors hover:bg-white/[0.07] hover:text-fg", hasActiveEditMask ? "bg-[#ff684c]/10 text-[#ff8a72]" : "text-fg-dim")}>
         <Icon name="PaintBrush" size={12} className="shrink-0" />画笔
         {hasActiveEditMask ? <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-[#ff684c] shadow-[0_0_8px_rgba(255,104,76,.7)]" /> : null}
+      </button>
+      <span className="h-4 shrink-0 border-l border-line" />
+      <button type="button" onClick={openNodeCompare} className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] text-fg-dim transition-colors hover:bg-white/[0.07] hover:text-fg">
+        <Icon name="Swap" size={12} className="shrink-0" />对比
       </button>
     </div>
   ) : undefined;
@@ -1277,6 +1394,24 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
               .catch(() => showToast("贴图读取失败", "error"));
           }}
         />
+        <input
+          ref={compareFileRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          className="hidden"
+          aria-label="选择对比图片"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.currentTarget.value = "";
+            if (!file || !isImageFile(file)) return;
+            void fileToDataURL(file)
+              .then((src) => {
+                setExternalCompareImage({ id: `external-node-${id}`, src, label: file.name });
+                setCompareOpen(true);
+              })
+              .catch(() => showToast("对比图片读取失败", "error"));
+          }}
+        />
       </div>
 
       {/* ── Composer ── */}
@@ -1295,13 +1430,6 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
             <Icon name="Paperclip" size={11} />
             参考 {Math.min(MAX_IMAGE_REFERENCES, linkedRefCount + ownImageUrls.length)}/{MAX_IMAGE_REFERENCES}
           </Chip>
-          <div ref={styleAreaRef} className="relative">
-            {popover === "style" ? <StylePopover data={d} nodeId={id} onClose={() => setPopover("none")} /> : null}
-            <Chip active={d.styleId !== "none"} onClick={() => setPopover(popover === "style" ? "none" : "style")} title="风格预设">
-              <Icon name="Palette" size={11} />
-              {styleLabel}
-            </Chip>
-          </div>
           <Chip
             active={Boolean(d.batchPromptEnabled)}
             onClick={() => {
@@ -1475,6 +1603,14 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
       ) : null}
       {editor === "brush" && activeImageUrl ? (
         <BrushEditor src={activeImageUrl} hasExistingMask={hasActiveEditMask} onClose={() => setEditor("none")} onApply={applyEditMask} onRemoveMask={removeEditMask} />
+      ) : null}
+      {compareOpen && nodeCompareCandidates.length >= 2 ? (
+        <ImageCompareViewer
+          images={nodeCompareCandidates}
+          initialLeftId={otherNodeCompareId ?? externalCompareImage?.id}
+          initialRightId={activeNodeCompareId}
+          onClose={() => setCompareOpen(false)}
+        />
       ) : null}
     </NodeShell>
   );

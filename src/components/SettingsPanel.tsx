@@ -1,6 +1,6 @@
 "use client";
 
-// 设置面板 — API 令牌 + 连接测试（复用 TVision 的接口协议）。
+// 设置面板 — New API 令牌 + 连接测试（生成与 Agent 共用）。
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
@@ -89,7 +89,7 @@ export function SettingsPanel() {
                 hint={
                   settings?.hasApiKey
                     ? `当前已保存：${settings.apiKeyMasked} · 留空则保持不变`
-                    : "在 o1key 后台创建的 new-api 令牌。仅保存在本机 data/settings.json。"
+                    : "在 o1key / New API 后台创建的令牌。生成与 Agent 服务共用，仅保存在本机。"
                 }
               >
                 <input
