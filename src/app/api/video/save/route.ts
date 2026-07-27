@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import { appendVideoMeta } from "@/lib/historyMeta";
+import { copyFileToLocalDirectory } from "@/lib/localMedia.server";
 import type { VideoMeta } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -19,8 +20,9 @@ export async function POST(req: Request) {
     videoUrl?: string;
     taskId?: string;
     meta?: Partial<VideoMeta>;
+    outputDirectory?: string;
   };
-  const { videoUrl, taskId, meta } = body;
+  const { videoUrl, taskId, meta, outputDirectory } = body;
   if (!videoUrl) return NextResponse.json({ error: "缺少 videoUrl" }, { status: 400 });
   if (!/^https?:\/\//i.test(videoUrl)) return NextResponse.json({ error: "视频地址不合法" }, { status: 400 });
 
@@ -33,7 +35,10 @@ export async function POST(req: Request) {
     if (meta && taskId) {
       await appendVideoMeta({ ...meta, taskId, createdAt: meta.createdAt ?? Date.now() } as VideoMeta);
     }
-    return NextResponse.json({ localUrl: `/api/media/${filename}` });
+    const exportedPath = outputDirectory
+      ? await copyFileToLocalDirectory(target, outputDirectory, "tfvision-video")
+      : undefined;
+    return NextResponse.json({ localUrl: `/api/media/${filename}`, exportedPath });
   } catch {
     // not saved yet — download below
   }
@@ -52,5 +57,8 @@ export async function POST(req: Request) {
     await appendVideoMeta({ ...meta, taskId, createdAt: meta.createdAt ?? Date.now() } as VideoMeta);
   }
 
-  return NextResponse.json({ localUrl: `/api/media/${filename}` });
+  const exportedPath = outputDirectory
+    ? await copyFileToLocalDirectory(target, outputDirectory, "tfvision-video")
+    : undefined;
+  return NextResponse.json({ localUrl: `/api/media/${filename}`, exportedPath });
 }

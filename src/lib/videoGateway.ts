@@ -133,21 +133,33 @@ function* payloadObjects(payload: unknown): Generator<Record<string, unknown>> {
 }
 
 export function extractVideoTaskId(payload: unknown): string | null {
-  for (const source of payloadObjects(payload)) {
-    for (const key of ["task_id", "taskId", "id"]) {
+  const sources = Array.from(payloadObjects(payload));
+  for (const source of sources) {
+    for (const key of ["task_id", "taskId"]) {
       const value = source[key];
       if (typeof value === "string" && value.trim()) return value.trim();
     }
+  }
+  for (const source of sources) {
+    const value = source.id;
+    if (typeof value === "string" && value.trim()) return value.trim();
   }
   return null;
 }
 
 export function extractGeneratedVideoUrl(payload: unknown): string | null {
-  for (const source of payloadObjects(payload)) {
-    for (const key of ["video_url", "result_url", "url", "download_url"]) {
+  const sources = Array.from(payloadObjects(payload));
+  for (const source of sources) {
+    for (const key of ["video_url", "result_url", "download_url"]) {
       const value = source[key];
       if (typeof value === "string" && /^https?:\/\//i.test(value)) return value;
     }
+  }
+  for (const source of sources) {
+    const value = source.url;
+    if (typeof value !== "string" || !/^https?:\/\//i.test(value)) continue;
+    const mediaHint = String(source.type ?? source.kind ?? source.mime_type ?? source.content_type ?? "").toLowerCase();
+    if (mediaHint.includes("video") || /\.(?:mp4|mov|webm)(?:[?#]|$)/i.test(value)) return value;
   }
   return null;
 }

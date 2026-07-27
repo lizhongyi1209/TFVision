@@ -24,6 +24,7 @@ export const dynamic = "force-dynamic";
 const ENDPOINT_IMAGE2VIDEO = "/kling/v1/videos/image2video";
 const ENDPOINT_OMNI = "/kling/v1/videos/omni-video";
 const ENDPOINT_UNIFIED = "/v1/video/generations";
+const MAX_BODY_BYTES = 128 * 1024;
 
 const MODE_MAP: Record<string, string> = { "720p": "std", "1080p": "pro", "4K": "4k" };
 const VALID_RATIOS = new Set(["智能", "16:9", "4:3", "1:1", "3:4", "9:16", "21:9"]);
@@ -32,7 +33,16 @@ export async function POST(req: Request) {
   const s = await readSettings();
   if (!s.apiKey) return NextResponse.json({ error: "未设置 API 令牌" }, { status: 400 });
 
-  const p = (await req.json().catch(() => ({}))) as VideoJobParams;
+  const rawBody = await req.text();
+  if (Buffer.byteLength(rawBody, "utf8") > MAX_BODY_BYTES) {
+    return NextResponse.json({ error: "视频任务参数过大" }, { status: 413 });
+  }
+  let p: VideoJobParams;
+  try {
+    p = JSON.parse(rawBody) as VideoJobParams;
+  } catch {
+    return NextResponse.json({ error: "请求 JSON 格式错误" }, { status: 400 });
+  }
   const rawModel = String(p.model ?? "v3");
   if (!isVideoModel(rawModel)) return NextResponse.json({ error: "不支持的视频模型" }, { status: 400 });
   const model = rawModel;
@@ -165,6 +175,7 @@ export async function POST(req: Request) {
     method: "POST",
     headers,
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(45_000),
   }).catch((e) => e as Error);
   if (submitRes instanceof Error) {
     return NextResponse.json({ error: `网络连接失败: ${submitRes.message}` }, { status: 500 });

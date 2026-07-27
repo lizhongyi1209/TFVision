@@ -55,9 +55,18 @@ function extractProgress(p: unknown): number {
 
 function extractVideoUrlDeep(p: unknown): string | null {
   for (const src of collectDicts(p)) {
-    for (const key of ["video_url", "result_url", "url", "download_url"]) {
+    for (const key of ["video_url", "result_url", "download_url"]) {
       const v = src[key];
       if (v && typeof v === "string" && /^https?:\/\//i.test(v)) return v;
+    }
+    const genericUrl = src.url;
+    const mediaHint = String(src.type ?? src.kind ?? src.mime_type ?? src.content_type ?? "").toLowerCase();
+    if (
+      typeof genericUrl === "string" &&
+      /^https?:\/\//i.test(genericUrl) &&
+      (mediaHint.includes("video") || /\.(?:mp4|mov|webm)(?:[?#]|$)/i.test(genericUrl))
+    ) {
+      return genericUrl;
     }
     const taskResult = src.task_result;
     if (taskResult && typeof taskResult === "object") {

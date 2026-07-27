@@ -18,6 +18,7 @@ import {
   type ModelName,
   type Quality,
   type Resolution,
+  type TextNodeData,
 } from "@/lib/types";
 import {
   ASPECT_RATIOS,
@@ -391,7 +392,7 @@ function ParamPopover({ data, nodeId, onClose }: { data: ImageNodeData; nodeId: 
 
   return (
     <div
-      className="glass popover-enter absolute bottom-full left-0 z-30 mb-2 w-[340px] origin-bottom-left rounded-panel p-4"
+      className="glass tf-node-popover popover-enter absolute bottom-full left-0 z-[80] mb-2 w-[340px] origin-bottom-left rounded-panel p-4"
       onMouseDown={(e) => e.stopPropagation()}
     >
       <div className="mb-2 flex items-center justify-between">
@@ -493,7 +494,7 @@ function ModelPopover({ data, nodeId, onClose }: { data: ImageNodeData; nodeId: 
   const updateNode = useStudio((s) => s.updateNode);
   return (
     <div
-      className="glass popover-enter absolute bottom-full left-0 z-30 mb-2 w-[300px] origin-bottom-left rounded-panel p-2"
+      className="glass tf-node-popover popover-enter absolute bottom-full left-0 z-[80] mb-2 w-[300px] origin-bottom-left rounded-panel p-2"
       onMouseDown={(e) => e.stopPropagation()}
     >
       {MODELS.map((m) => (
@@ -532,12 +533,11 @@ function GeneratedImageResult({
   data: ImageNodeData;
 }) {
   const cancelImageGeneration = useStudio((s) => s.cancelImageGeneration);
+  const showToast = useStudio((s) => s.showToast);
   const nodes = useStudio((s) => s.nodes);
-  const compareFileRef = useRef<HTMLInputElement>(null);
   const [focusedResultIndex, setFocusedResultIndex] = useState<number | null>(null);
   const [resultActionsVisible, setResultActionsVisible] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
-  const [externalCompareImage, setExternalCompareImage] = useState<ImageCompareCandidate | null>(null);
   const nodeWidth = data.width || 470;
   const nodeHeight = data.height ?? nodeWidth;
   const urls = data.urls.length ? data.urls : data.url ? [data.url] : [];
@@ -550,33 +550,29 @@ function GeneratedImageResult({
     : undefined;
   const sourceData = sourceNode?.data as ImageNodeData | undefined;
   const sourceUrls = sourceData?.urls.length ? sourceData.urls : sourceData?.url ? [sourceData.url] : [];
-  const sourceCandidates: ImageCompareCandidate[] = sourceUrls.map((src, index) => ({
+  const referenceUrls = data.generationReferenceImages?.length
+    ? data.generationReferenceImages
+    : sourceUrls;
+  const sourceCandidates: ImageCompareCandidate[] = referenceUrls.map((src, index) => ({
     id: `source-${sourceNode?.id ?? "unknown"}-${index}`,
     src,
-    label: sourceUrls.length > 1 ? `生成前 ${index + 1}` : "生成前",
+    label: referenceUrls.length > 1 ? `参考图 ${index + 1}` : "参考图",
   }));
   const resultCandidates: ImageCompareCandidate[] = urls.map((src, index) => ({
     id: `result-${id}-${index}`,
     src,
     label: resultLabels[index] || (urls.length > 1 ? `生成结果 ${index + 1}` : "生成结果"),
   }));
-  const canvasCandidates = canvasImageCompareCandidates(
-    nodes,
-    new Set([id, ...(sourceNode ? [sourceNode.id] : [])]),
-    new Set([...sourceUrls, ...urls]),
-  );
-  const compareCandidates = externalCompareImage
-    ? [...sourceCandidates, ...resultCandidates, ...canvasCandidates, externalCompareImage]
-    : [...sourceCandidates, ...resultCandidates, ...canvasCandidates];
+  const activeResultCandidate = resultCandidates[activeResultIndex];
+  const compareCandidates = activeResultCandidate
+    ? [...sourceCandidates, activeResultCandidate]
+    : sourceCandidates;
   const activeResultCandidateId = resultCandidates[activeResultIndex]?.id;
-  const initialSourceCandidateId =
-    sourceCandidates[0]?.id ??
-    canvasCandidates[0]?.id ??
-    resultCandidates.find((_, index) => index !== activeResultIndex)?.id;
+  const initialSourceCandidateId = sourceCandidates[0]?.id;
 
   const openResultCompare = () => {
-    if (compareCandidates.length < 2) {
-      compareFileRef.current?.click();
+    if (!sourceCandidates.length) {
+      showToast("本次生成没有参考图，无法进行原图对比", "info");
       return;
     }
     setCompareOpen(true);
@@ -765,27 +761,11 @@ function GeneratedImageResult({
             </span>
           </div>
         )}
-        <input
-          ref={compareFileRef}
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          className="hidden"
-          aria-label="选择对比图片"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            event.currentTarget.value = "";
-            if (!file || !isImageFile(file)) return;
-            void fileToDataURL(file).then((src) => {
-              setExternalCompareImage({ id: `external-result-${id}`, src, label: file.name });
-              setCompareOpen(true);
-            });
-          }}
-        />
       </div>
       {compareOpen && compareCandidates.length >= 2 ? (
         <ImageCompareViewer
           images={compareCandidates}
-          initialLeftId={initialSourceCandidateId ?? externalCompareImage?.id}
+          initialLeftId={initialSourceCandidateId}
           initialRightId={activeResultCandidateId}
           onClose={() => setCompareOpen(false)}
         />
@@ -924,11 +904,11 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   }, [popover]);
 
   useEffect(() => {
-    if (!selected || dragging || multipleNodesSelected || selectionModifierPressed) {
+    if (!selected || dragging || multipleNodesSelected) {
       setPopover("none");
       setComposerOpen(false);
     }
-  }, [dragging, multipleNodesSelected, selected, selectionModifierPressed]);
+  }, [dragging, multipleNodesSelected, selected]);
 
   useEffect(() => {
     const textarea = promptRef.current;
@@ -997,10 +977,19 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
     const imageData = src.data as ImageNodeData;
     return count + (imageData.urls.length || (imageData.url ? 1 : 0));
   }, 0);
+  const hasLinkedTextPrompt = edges.some((edge) => {
+    if (edge.target !== id) return false;
+    const source = nodes.find((node) => node.id === edge.source);
+    return source?.type === "text" && Boolean((source.data as TextNodeData).text.trim());
+  });
 
   const combo = comboError(d.model, d.resolution, d.billing, d.aspectRatio);
   const batchPrompts = d.batchPromptEnabled ? normalizeBatchPrompts(d) : [];
   const filledBatchPromptCount = batchPrompts.filter((prompt) => prompt.trim()).length;
+  const hasPrompt = d.batchPromptEnabled
+    ? filledBatchPromptCount > 0
+    : Boolean(d.prompt.trim() || hasLinkedTextPrompt);
+  const sendDisabled = Boolean(combo) || !hasPrompt;
   const combinationGroups = d.combinationEnabled && Array.isArray(d.combinationGroups) ? d.combinationGroups : [];
   const totalCombinationCount = combinationCount(combinationGroups, ownImageUrls.length);
   const canAddImages = ownImageUrls.length < MAX_IMAGE_REFERENCES;
@@ -1420,7 +1409,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
           role="dialog"
           aria-label={ownImageUrls.length ? "图片生成设置" : "文生图设置"}
           className={cn(
-            "relative left-1/2 mt-3 -translate-x-1/2 rounded-[18px] border border-line bg-card p-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.24)] nodrag",
+            "relative left-1/2 z-[40] mt-3 -translate-x-1/2 rounded-[18px] border border-line bg-card p-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.24)] nodrag",
             d.combinationEnabled ? "w-[calc(100%+360px)]" : "w-[calc(100%+192px)]",
           )}
           onMouseDown={(e) => e.stopPropagation()}
@@ -1485,7 +1474,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
               value={d.prompt}
               onChange={(event) => updateNode(id, { prompt: event.target.value })}
               onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && !sendDisabled) {
                   event.preventDefault();
                   void submitGeneration();
                 }
@@ -1511,7 +1500,9 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
             onChange={setBatchPrompt}
             onAdd={addBatchPrompt}
             onRemove={removeBatchPrompt}
-            onSubmit={submitGeneration}
+            onSubmit={() => {
+              if (!sendDisabled) void submitGeneration();
+            }}
           />
         ) : (
           <textarea
@@ -1525,7 +1516,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
               updateNode(id, { prompt: e.target.value, promptHeight: promptHeightRef.current });
             }}
             onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !sendDisabled) {
                 e.preventDefault();
                 void submitGeneration();
               }
@@ -1565,19 +1556,19 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
           </div>
           <button
             type="button"
-            title={combo ?? (
+            title={!hasPrompt ? "请输入提示词" : combo ?? (
               d.combinationEnabled
                 ? `生成 ${totalCombinationCount} 个组合 (Ctrl+Enter)`
                 : d.batchPromptEnabled
                   ? `并发生成 ${filledBatchPromptCount} 套提示词 (Ctrl+Enter)`
                   : "生成 (Ctrl+Enter)"
             )}
-            disabled={!!combo}
+            disabled={sendDisabled}
             onClick={() => void submitGeneration()}
             className={cn(
               "flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-all active:scale-95",
-              combo
-                ? "bg-white/10 text-fg-mute"
+              sendDisabled
+                ? "cursor-not-allowed bg-white/10 text-fg-mute"
                 : "bg-accent text-ink shadow-[0_6px_20px_-6px_rgba(255,255,255,0.4)] hover:bg-accent-2",
             )}
           >

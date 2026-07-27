@@ -5,12 +5,12 @@ import { createPortal } from "react-dom";
 import { useStudio } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { MODELS } from "@/lib/models";
-import type { AgentImagePlan, HistoryItem, ModelName } from "@/lib/types";
+import type { AgentImagePlan, AgentVideoPlan, HistoryItem, ModelName } from "@/lib/types";
 import { deleteAgentMedia, loadAgentMedia, persistAgentMedia } from "@/lib/agentMediaStore";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { Icon } from "./icons";
 
-type AgentCapability = "chat" | "image";
+type AgentCapability = "chat" | "image" | "video" | "code";
 type AgentActivityItem = {
   id: string;
   label: string;
@@ -521,9 +521,7 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [assetPickerOpen, setAssetPickerOpen] = useState(false);
   const [assets, setAssets] = useState<HistoryItem[] | null>(null);
-  const [capability, setCapability] = useState<AgentCapability>("chat");
-  const [capabilityOpen, setCapabilityOpen] = useState(false);
-  const [imageModel, setImageModel] = useState<ModelName>("Nano Banana 2");
+  const [imageModel, setImageModel] = useState<ModelName | null>(null);
   const [imageModelOpen, setImageModelOpen] = useState(false);
   const [continueFromLast, setContinueFromLast] = useState(true);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
@@ -532,7 +530,6 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
   const [starterPage, setStarterPage] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const capabilityButtonRef = useRef<HTMLButtonElement>(null);
   const imageModelButtonRef = useRef<HTMLButtonElement>(null);
   const agentActivityRef = useRef<AgentActivityItem[]>([]);
   const agentActivityIdRef = useRef(0);
@@ -583,7 +580,6 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
 
   useEffect(() => {
     if (open) return;
-    setCapabilityOpen(false);
     setImageModelOpen(false);
   }, [open]);
 
@@ -612,7 +608,6 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
       setPrompt("");
       setAttachments([]);
       setEditingMessageId(null);
-      setCapability(hydratedMessages.at(-1)?.capability ?? "chat");
       setContinueFromLast(Boolean(latestGeneratedImages(hydratedMessages).length));
       setHistoryOpen(false);
     } catch {
@@ -834,7 +829,6 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
     setEditingMessageId(message.id);
     setPrompt(message.content);
     setAttachments(message.attachments ?? []);
-    setCapability(message.capability ?? "chat");
     setContinueFromLast(false);
     requestAnimationFrame(() => {
       inputRef.current?.focus();
@@ -876,6 +870,7 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
     task: "image-plan" | "image-repair",
     requestMessages: AgentMessage[],
     referenceImages: string[],
+    generationModel: ModelName,
     previousPlan?: AgentImagePlan,
     imageError?: string,
   ) => {
@@ -895,7 +890,7 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
       body: JSON.stringify({
         task,
         messages: normalizedMessages,
-        imageModel,
+        imageModel: generationModel,
         previousPlan,
         imageError,
       }),
@@ -913,8 +908,12 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
     userMessage: AgentMessage,
     conversationId: string,
     title: string,
+    initialPlan?: AgentImagePlan,
+    resolvedImageModel?: ModelName,
+    outputDirectory?: string,
   ) => {
     const imageTools = await import("@/lib/agentImageGeneration");
+    const generationModel = resolvedImageModel ?? imageModel ?? "Nano Banana 2";
     const previousImages = continueFromLast ? latestGeneratedImages(baseMessages) : [];
     const explicitImages = (userMessage.attachments ?? []).filter((attachment) => attachment.kind === "image");
     const referenceAttachments = [...previousImages, ...explicitImages]
@@ -932,7 +931,7 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
     ) => {
       for (let attempt = 0; ; attempt += 1) {
         try {
-          return await requestAgentImagePlan(task, pendingMessages, referenceImages, previousPlan, imageError);
+          return await requestAgentImagePlan(task, pendingMessages, referenceImages, generationModel, previousPlan, imageError);
         } catch (error) {
           if (!imageTools.isImageOverloadError(error) || attempt >= MAX_IMAGE_OVERLOAD_RETRIES) throw error;
           const retry = attempt + 1;
@@ -946,7 +945,7 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
     };
 
     advanceAgentActivity(referenceImages.length ? "理解修改要求并规划生成方案" : "编写提示词并规划生成参数");
-    let currentPlan = await planWithOverloadRetry("image-plan");
+    let currentPlan = initialPlan ?? await planWithOverloadRetry("image-plan");
     advanceAgentActivity(currentPlan.note || "生成方案已准备完成");
     let overloadRetries = 0;
     let repairRetries = 0;
@@ -954,7 +953,7 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
     for (;;) {
       try {
         advanceAgentActivity("提交图片生成任务");
-        const jobs = await imageTools.submitAgentImageJobs(currentPlan, imageModel, referenceImages);
+        const jobs = await imageTools.submitAgentImageJobs(currentPlan, generationModel, referenceImages);
         advanceAgentActivity("任务已提交，等待生成结果");
         const result = await imageTools.pollAgentImageJobs(jobs, (completed, total, progress) => {
           const percent = typeof progress === "number" ? ` · ${Math.round(progress * 100)}%` : "";
@@ -963,6 +962,26 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
           });
         });
         if (!result.images.length) throw new Error(result.errors.join("；") || "图片生成没有返回结果");
+
+        let exportedPaths: string[] = [];
+        let exportError = "";
+        if (outputDirectory) {
+          advanceAgentActivity(`保存结果到本地目录 · ${outputDirectory}`);
+          try {
+            const exportResponse = await fetch("/api/agent/export-media", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ urls: result.images, outputDirectory }),
+            });
+            const exportPayload = (await exportResponse.json().catch(() => ({}))) as { paths?: string[]; error?: string };
+            if (!exportResponse.ok || !exportPayload.paths?.length) {
+              throw new Error(exportPayload.error || "保存到指定目录失败");
+            }
+            exportedPaths = exportPayload.paths;
+          } catch (error) {
+            exportError = (error as Error)?.message || "保存到指定目录失败";
+          }
+        }
 
         const completedAt = Date.now();
         const generatedAttachments: AgentAttachment[] = result.images.map((url, index) => ({
@@ -976,13 +995,18 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
         const partialFailure = result.errors.length
           ? `\n\n其中部分任务未完成：${result.errors.map(imageTools.sanitizeImageError).join("；")}`
           : "";
+        const exportNote = exportedPaths.length
+          ? `\n\n已保存到本地：\n${exportedPaths.map((filePath) => `- \`${filePath}\``).join("\n")}`
+          : exportError
+            ? `\n\n图片已生成，但保存到指定目录失败：${exportError}`
+            : "";
         const assistantMessage: AgentMessage = {
           id: `assistant-image-${completedAt}`,
           role: "assistant",
-          content: `图片已经生成完成。你可以继续描述修改要求，我会基于本轮结果继续调整。${partialFailure}`,
+          content: `图片已经生成完成。你可以继续描述修改要求，我会基于本轮结果继续调整。${partialFailure}${exportNote}`,
           createdAt: completedAt,
           capability: "image",
-          generation: { ...currentPlan, model: imageModel },
+          generation: { ...currentPlan, model: generationModel },
           attachments: generatedAttachments,
           activity: completeAgentActivity("图片生成完成"),
         };
@@ -1023,14 +1047,129 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
     }
   };
 
+  const createVideoReply = async (
+    baseMessages: AgentMessage[],
+    pendingMessages: AgentMessage[],
+    userMessage: AgentMessage,
+    conversationId: string,
+    title: string,
+    plan: AgentVideoPlan,
+  ) => {
+    const mediaTools = await import("@/lib/agentImageGeneration");
+    const reference = (userMessage.attachments ?? []).find((attachment) => attachment.kind === "image")
+      ?? (continueFromLast ? latestGeneratedImages(baseMessages)[0] : undefined);
+    let imageUrl: string | undefined;
+    if (reference) {
+      advanceAgentActivity("上传视频首帧参考");
+      const dataUrl = await attachmentToDataUrl(reference);
+      if (dataUrl) {
+        const form = new FormData();
+        form.append("file", await (await fetch(dataUrl)).blob(), "agent-first-frame.png");
+        const uploadResponse = await fetch("/api/video/upload", { method: "POST", body: form });
+        const uploadPayload = (await uploadResponse.json().catch(() => ({}))) as { url?: string; error?: string };
+        if (!uploadResponse.ok || !uploadPayload.url) throw new Error(uploadPayload.error || "视频首帧上传失败");
+        imageUrl = uploadPayload.url;
+      }
+    }
+    if ((plan.model === "v3" || plan.model === "v2-6") && !imageUrl) {
+      throw new Error(`${plan.model} 需要首帧图片，请添加一张参考图后重试`);
+    }
+
+    advanceAgentActivity(plan.note || "提交视频生成任务");
+    const submitResponse = await fetch("/api/video/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: plan.model,
+        mode: plan.mode,
+        duration: plan.duration,
+        prompt: plan.prompt,
+        sound: plan.sound,
+        aspectRatio: plan.aspectRatio,
+        imageUrl,
+      }),
+    });
+    const submitPayload = (await submitResponse.json().catch(() => ({}))) as { taskId?: string; error?: string };
+    if (!submitResponse.ok || !submitPayload.taskId) {
+      throw new Error(submitPayload.error || "视频任务提交失败");
+    }
+
+    const taskId = submitPayload.taskId;
+    const deadline = Date.now() + 15 * 60_000;
+    let remoteUrl = "";
+    while (Date.now() < deadline) {
+      const pollResponse = await fetch(`/api/video/jobs/${encodeURIComponent(taskId)}`);
+      const pollPayload = (await pollResponse.json().catch(() => ({}))) as {
+        status?: string;
+        progress?: number;
+        videoUrl?: string;
+        error?: string;
+      };
+      if (pollPayload.status === "success" && pollPayload.videoUrl) {
+        remoteUrl = pollPayload.videoUrl;
+        break;
+      }
+      if (pollPayload.status === "failed") throw new Error(pollPayload.error || "视频生成失败");
+      const progress = typeof pollPayload.progress === "number" ? ` · ${Math.round(pollPayload.progress * 100)}%` : "";
+      advanceAgentActivity(`生成视频${progress}`, { replaceActive: true });
+      await mediaTools.waitForImageRetry(5_000);
+    }
+    if (!remoteUrl) throw new Error("视频生成等待超时，请稍后从历史资产中查看结果");
+
+    advanceAgentActivity(plan.outputDirectory ? `保存视频到本地目录 · ${plan.outputDirectory}` : "保存视频结果");
+    const saveResponse = await fetch("/api/video/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        videoUrl: remoteUrl,
+        taskId,
+        outputDirectory: plan.outputDirectory,
+        meta: {
+          taskId,
+          model: plan.model,
+          mode: plan.mode,
+          duration: plan.duration,
+          prompt: plan.prompt,
+          sound: plan.sound,
+          aspectRatio: plan.aspectRatio,
+          createdAt: Date.now(),
+        },
+      }),
+    });
+    const savePayload = (await saveResponse.json().catch(() => ({}))) as {
+      localUrl?: string;
+      exportedPath?: string;
+      error?: string;
+    };
+    if (!saveResponse.ok || !savePayload.localUrl) throw new Error(savePayload.error || "视频保存失败");
+
+    const completedAt = Date.now();
+    const localNote = savePayload.exportedPath ? `\n\n已保存到本地：\`${savePayload.exportedPath}\`` : "";
+    const assistantMessage: AgentMessage = {
+      id: `assistant-video-${completedAt}`,
+      role: "assistant",
+      content: `视频已经生成完成。${localNote}`,
+      createdAt: completedAt,
+      capability: "video",
+      attachments: [{
+        id: attachmentId("generated-video"),
+        label: "生成视频",
+        kind: "video",
+        previewUrl: savePayload.localUrl,
+        sourceUrl: savePayload.localUrl,
+        generated: true,
+      }],
+      activity: completeAgentActivity("视频生成完成"),
+    };
+    const completedMessages = [...pendingMessages, assistantMessage];
+    setMessages(completedMessages);
+    persistConversation(conversationId, title, completedMessages, completedAt);
+  };
+
   const send = async () => {
-    const defaultContent = capability === "image" ? "请根据这些参考图生成图片。" : "请分析这些附件。";
+    const defaultContent = "请分析这些附件，并根据内容选择合适的处理方式。";
     const content = prompt.trim() || (attachments.length ? defaultContent : "");
     if (!content || isSending) return;
-    if (capability === "image" && attachments.some((attachment) => attachment.kind === "video")) {
-      showToast("生图模式暂不支持视频参考，请切换到对话模式分析视频", "info");
-      return;
-    }
     const timestamp = Date.now();
     const userMessage: AgentMessage = {
       id: `user-${timestamp}`,
@@ -1038,7 +1177,7 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
       content,
       createdAt: timestamp,
       attachments: [...attachments],
-      capability,
+      capability: "chat",
     };
     const conversationId = activeConversationId ?? `conversation-${timestamp}`;
     const title = content.replace(/\s+/g, " ").slice(0, 28);
@@ -1052,14 +1191,11 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
     setAttachments([]);
     setEditingMessageId(null);
     setIsSending(true);
-    beginAgentActivity(capability === "image" ? "理解你的创作需求" : "理解问题与对话上下文");
+    beginAgentActivity("理解任务并选择合适的工具");
     let requestMessages = pendingMessages;
+    let requestMode: AgentCapability = "chat";
 
     try {
-      if (capability === "image") {
-        await createImageReply(baseMessages, pendingMessages, userMessage, conversationId, title);
-        return;
-      }
       if ((userMessage.attachments ?? []).some((attachment) => attachment.kind === "video" && !attachment.frames?.length)) {
         advanceAgentActivity("分析视频内容与画面变化");
       }
@@ -1070,46 +1206,98 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
         setMessages(requestMessages);
         persistConversation(conversationId, title, requestMessages, timestamp);
       }
-      advanceAgentActivity(webSearchEnabled ? "检索相关信息并综合分析" : "组织附件与上下文进行分析");
+      advanceAgentActivity(
+        webSearchEnabled
+          ? "组织上下文，并按需调用联网与本地文件工具"
+          : "组织上下文，并按需调用本地文件或生图工具",
+      );
+      const apiMessages = requestMessages.map(requestMessage);
+      if (continueFromLast) {
+        const previousVisuals = (
+          await Promise.all(latestGeneratedImages(baseMessages).slice(0, MAX_AGENT_IMAGES).map(attachmentToDataUrl))
+        ).filter((value): value is string => Boolean(value));
+        if (apiMessages.length && previousVisuals.length) {
+          const lastIndex = apiMessages.length - 1;
+          apiMessages[lastIndex] = {
+            ...apiMessages[lastIndex],
+            visuals: [
+              ...(apiMessages[lastIndex].visuals ?? []),
+              ...previousVisuals.map((dataUrl, index) => ({ dataUrl, label: `上一轮生成结果 ${index + 1}` })),
+            ],
+          };
+        }
+      }
       const response = await fetch("/api/agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          task: "chat",
-          messages: requestMessages.map(requestMessage),
+          task: "agent",
+          messages: apiMessages,
           webSearch: webSearchEnabled,
+          imageModel,
         }),
       });
       const payload = (await response.json().catch(() => ({}))) as {
         message?: string;
         error?: string;
         webSearch?: boolean;
+        toolTrace?: AgentActivityItem[];
+        workspaceRoot?: string;
+        mode?: AgentCapability;
+        plan?: AgentImagePlan;
+        imageModel?: ModelName;
+        outputDirectory?: string;
+        videoPlan?: AgentVideoPlan;
       };
       if (!response.ok || !payload.message) throw new Error(payload.error || `Agent 请求失败（HTTP ${response.status}）`);
-      advanceAgentActivity("整理分析结果与回答结构");
+      requestMode = payload.mode ?? "chat";
+      if (payload.toolTrace?.length) {
+        writeAgentActivity(payload.toolTrace);
+      } else {
+        advanceAgentActivity("整理分析结果与回答结构");
+      }
+      if (payload.videoPlan) {
+        requestMode = "video";
+        await createVideoReply(baseMessages, requestMessages, userMessage, conversationId, title, payload.videoPlan);
+        return;
+      }
+      if (payload.plan) {
+        requestMode = "image";
+        await createImageReply(
+          baseMessages,
+          requestMessages,
+          userMessage,
+          conversationId,
+          title,
+          payload.plan,
+          payload.imageModel,
+          payload.outputDirectory,
+        );
+        return;
+      }
       const completedAt = Date.now();
       const assistantMessage: AgentMessage = {
         id: `assistant-${completedAt}`,
         role: "assistant",
         content: payload.message,
         createdAt: completedAt,
-        capability: "chat",
+        capability: requestMode,
         webSearch: payload.webSearch === true,
-        activity: completeAgentActivity("回答已完成"),
+        activity: completeAgentActivity(requestMode === "code" ? "Coding 任务已完成" : "回答已完成"),
       };
       const completedMessages = [...requestMessages, assistantMessage];
       setMessages(completedMessages);
       persistConversation(conversationId, title, completedMessages, completedAt);
     } catch (error) {
       const completedAt = Date.now();
-      const isImageRequest = capability === "image";
+      const mediaLabel = requestMode === "image" ? "图片" : requestMode === "video" ? "视频" : "";
       const assistantMessage: AgentMessage = {
         id: `assistant-error-${completedAt}`,
         role: "assistant",
-        content: `${isImageRequest ? "图片生成失败" : "请求失败"}：${(error as Error)?.message || "请稍后重试"}`,
+        content: `${mediaLabel ? `${mediaLabel}生成失败` : "请求失败"}：${(error as Error)?.message || "请稍后重试"}`,
         createdAt: completedAt,
-        capability,
-        webSearch: isImageRequest ? false : webSearchEnabled,
+        capability: requestMode,
+        webSearch: mediaLabel ? false : webSearchEnabled,
         activity: completeAgentActivity("任务未完成"),
       };
       const completedMessages = [...requestMessages, assistantMessage];
@@ -1395,7 +1583,7 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
                 </button>
               </div>
             ) : null}
-            {capability === "image" && latestGeneratedImages(messages).length ? (
+            {latestGeneratedImages(messages).length ? (
               <button
                 type="button"
                 onClick={() => setContinueFromLast((current) => !current)}
@@ -1486,7 +1674,9 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
                 }
               }}
               rows={3}
-              placeholder={capability === "image" ? "描述想生成的画面，或说明如何修改上一张图…" : "描述你的创作目标，或上传参考素材…"}
+              placeholder={
+                "描述任务；需要本地文件时，直接写入文件夹路径…"
+              }
               className="tf-agent-prompt max-h-36 min-h-[66px] w-full resize-none bg-transparent px-2 py-1.5 text-[12px] leading-[1.6] text-fg outline-none placeholder:text-[#696970]"
             />
             <div className="flex items-center justify-between gap-2 px-0.5">
@@ -1645,94 +1835,33 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
                     </>
                   ) : null}
                 </div>
-                {capability === "chat" ? (
-                  <button
-                    type="button"
-                    onClick={() => setWebSearchEnabled((current) => !current)}
-                    title={webSearchEnabled ? "联网搜索已开启" : "联网搜索已关闭"}
-                    aria-pressed={webSearchEnabled}
-                    className={cn(
-                      "flex h-8 shrink-0 items-center gap-1.5 rounded-[10px] px-2 text-[10px] transition-colors",
-                      webSearchEnabled
-                        ? "bg-white/[0.07] text-fg"
-                        : "text-fg-mute hover:bg-white/[0.055] hover:text-fg",
-                    )}
-                  >
-                    <Icon name="Globe" size={13} />
-                    联网
-                  </button>
-                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setWebSearchEnabled((current) => !current)}
+                  title={webSearchEnabled ? "联网搜索已开启" : "联网搜索已关闭"}
+                  aria-pressed={webSearchEnabled}
+                  className={cn(
+                    "flex h-8 shrink-0 items-center gap-1.5 rounded-[10px] px-2 text-[10px] transition-colors",
+                    webSearchEnabled
+                      ? "bg-white/[0.07] text-fg"
+                      : "text-fg-mute hover:bg-white/[0.055] hover:text-fg",
+                  )}
+                >
+                  <Icon name="Globe" size={13} />
+                  联网
+                </button>
                 <div className="relative">
-                  <button
-                    ref={capabilityButtonRef}
-                    type="button"
-                    onClick={() => {
-                      setImageModelOpen(false);
-                      setCapabilityOpen((current) => !current);
-                    }}
-                    aria-haspopup="dialog"
-                    aria-expanded={capabilityOpen}
-                    className={cn(
-                      "flex h-8 shrink-0 items-center gap-1.5 rounded-[10px] px-2 text-[10px] transition-colors",
-                      capability === "image"
-                        ? "bg-[#8fb8ff]/[0.1] text-[#bed4ff]"
-                        : "text-fg-mute hover:bg-white/[0.055] hover:text-fg",
-                    )}
-                  >
-                    <Icon name={capability === "image" ? "MagicWand" : "ChatText"} size={13} />
-                    {capability === "image" ? "生图" : "对话"}
-                    <Icon name="CaretDown" size={9} />
-                  </button>
-                  <AgentPopover
-                    open={capabilityOpen}
-                    anchorRef={capabilityButtonRef}
-                    width={224}
-                    label="选择对话能力"
-                    onClose={() => setCapabilityOpen(false)}
-                  >
-                      <div className="rounded-[15px] p-1.5">
-                        {([
-                          ["chat", "对话分析", "回答问题、分析图片或视频", "ChatText"],
-                          ["image", "对话生图", "理解需求并直接返回生成图片", "MagicWand"],
-                        ] as const).map(([value, label, hint, icon]) => (
-                          <button
-                            key={value}
-                            type="button"
-                            onClick={() => {
-                              setCapability(value);
-                              setCapabilityOpen(false);
-                            }}
-                            className="flex w-full items-center gap-2.5 rounded-[11px] px-2.5 py-2 text-left hover:bg-white/[0.055]"
-                          >
-                            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/[0.045] text-fg-dim">
-                              <Icon name={icon} size={13} />
-                            </span>
-                            <span className="min-w-0 flex-1">
-                              <span className="block text-[11px] text-fg">{label}</span>
-                              <span className="block text-[9px] text-fg-mute">{hint}</span>
-                            </span>
-                            {capability === value ? <Icon name="Check" size={12} /> : null}
-                          </button>
-                        ))}
-                      </div>
-                  </AgentPopover>
-                </div>
-                {capability === "image" ? (
-                  <div className="relative">
                     <button
                       ref={imageModelButtonRef}
                       type="button"
-                      onClick={() => {
-                        setCapabilityOpen(false);
-                        setImageModelOpen((current) => !current);
-                      }}
+                      onClick={() => setImageModelOpen((current) => !current)}
                       title="选择图片模型"
                       aria-haspopup="dialog"
                       aria-expanded={imageModelOpen}
                       className="flex h-8 max-w-[86px] shrink-0 items-center gap-1.5 rounded-[10px] px-2 text-[10px] text-fg-mute transition-colors hover:bg-white/[0.055] hover:text-fg"
                     >
                       <Icon name="Image" size={13} />
-                      <span className="truncate">{MODELS.find((item) => item.name === imageModel)?.label ?? imageModel}</span>
+                      <span className="truncate">{imageModel ? MODELS.find((item) => item.name === imageModel)?.label ?? imageModel : "自动"}</span>
                       <Icon name="CaretDown" size={9} />
                     </button>
                     <AgentPopover
@@ -1744,6 +1873,23 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
                     >
                         <div className="rounded-[15px] p-1.5">
                           <p className="px-2.5 pb-1.5 pt-1 text-[10px] font-medium text-fg-mute">图片生成模型</p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setImageModel(null);
+                              setImageModelOpen(false);
+                            }}
+                            className="flex w-full items-center gap-2.5 rounded-[11px] px-2.5 py-2 text-left hover:bg-white/[0.055]"
+                          >
+                            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/[0.045] text-fg-dim">
+                              <Icon name="Sparkle" size={13} />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-[11px] text-fg">自动选择</span>
+                              <span className="block truncate text-[9px] text-fg-mute">由 Agent 根据任务决定模型</span>
+                            </span>
+                            {imageModel === null ? <Icon name="Check" size={12} /> : null}
+                          </button>
                           {MODELS.map((item) => (
                             <button
                               key={item.name}
@@ -1766,8 +1912,7 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
                           ))}
                         </div>
                     </AgentPopover>
-                  </div>
-                ) : null}
+                </div>
               </div>
               <button
                 type="button"

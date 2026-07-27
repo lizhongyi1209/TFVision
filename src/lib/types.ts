@@ -85,6 +85,17 @@ export interface VideoJobParams {
   audioUrls?: string[];
 }
 
+export interface AgentVideoPlan {
+  prompt: string;
+  model: VideoModel;
+  mode: VideoResolution;
+  duration: number;
+  sound: boolean;
+  aspectRatio: VideoAspectRatio;
+  note: string;
+  outputDirectory?: string;
+}
+
 /** 视频生成任务的参数快照（写入 data/video-meta.json sidecar）。 */
 export interface VideoMeta {
   taskId: string;
@@ -180,6 +191,8 @@ export type ImageNodeData = {
   isGeneratedResult?: boolean;
   /** 发起本次生成的参数/参考图片节点。 */
   generationSourceId?: string;
+  /** 本次生成实际提交的参考图，用于生成结果与原图对比。 */
+  generationReferenceImages?: string[];
   cancelledAt?: number;
   /** 局部编辑的透明蒙版与带高亮的 AI 引导图。 */
   editMask?: string;
@@ -195,6 +208,25 @@ export type ImageNodeData = {
   width?: number;
   height?: number;
   [key: string]: unknown;
+};
+
+export type VideoReferenceKind = "image" | "video" | "audio";
+export type VideoInputMode = "references" | "keyframes";
+export type VideoFrameRole = "first_frame" | "last_frame";
+
+export type VideoReferenceAsset = {
+  id: string;
+  kind: VideoReferenceKind;
+  name: string;
+  /** Public URL, populated lazily when generation is submitted. */
+  url?: string;
+  /** IndexedDB key for the original local Blob. */
+  localKey?: string;
+  /** Session-only object URL used for instant local preview. */
+  localUrl?: string;
+  /** Extracted first-frame thumbnail for local video previews. */
+  previewUrl?: string;
+  role?: VideoFrameRole;
 };
 
 export type VideoNodeData = {
@@ -213,6 +245,11 @@ export type VideoNodeData = {
   aspectRatio: VideoAspectRatio;
   sound: boolean;
   cameraFixed: boolean;
+  inputMode?: VideoInputMode;
+  /** Imported/playable video owned by this node; separate from generation references. */
+  sourceVideo?: VideoReferenceAsset;
+  referenceAssets?: VideoReferenceAsset[];
+  keyframeAssets?: VideoReferenceAsset[];
   width?: number;
   height?: number;
   [key: string]: unknown;

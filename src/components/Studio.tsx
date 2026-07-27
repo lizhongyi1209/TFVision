@@ -30,6 +30,7 @@ import { Toaster } from "./Toaster";
 import { AgentPanel } from "./AgentPanel";
 import { Icon } from "./icons";
 import { fileToDataURL } from "@/lib/utils";
+import { rememberVideoReferenceBlob } from "@/lib/videoReferenceStorage";
 
 const NODE_TYPES = { text: TextNode, image: ImageNode, video: VideoNode, group: GroupNode };
 
@@ -129,17 +130,34 @@ function Canvas() {
     [removeEdge],
   );
 
-  // Drop an image file anywhere on the canvas -> new image node there.
+  // Drop an image/video file on the empty canvas -> a playable media node.
+  // Drops over an existing video node remain multimodal reference inputs.
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       const file = e.dataTransfer?.files?.[0];
-      if (!file || !file.type.startsWith("image/")) return;
+      if (!file || (!file.type.startsWith("image/") && !file.type.startsWith("video/"))) return;
       const target = e.target as HTMLElement;
       if (!target.classList.contains("react-flow__pane")) return; // node-level drops handled by the node
       e.preventDefault();
       const flowPosition = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
-      void fileToDataURL(file).then((url) => {
-        addNode("image", flowPosition, { url, urls: [url] });
+      if (file.type.startsWith("image/")) {
+        void fileToDataURL(file).then((url) => {
+          addNode("image", flowPosition, { url, urls: [url] });
+        });
+        return;
+      }
+      const assetId = `canvas-video-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      const localUrl = URL.createObjectURL(file);
+      void rememberVideoReferenceBlob(assetId, file);
+      addNode("video", flowPosition, {
+        label: file.name.replace(/\.[^.]+$/, "") || "导入视频",
+        sourceVideo: {
+          id: assetId,
+          kind: "video",
+          name: file.name,
+          localKey: assetId,
+          localUrl,
+        },
       });
     },
     [rf, addNode],

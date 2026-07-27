@@ -97,8 +97,6 @@ export interface VideoModelInfo {
 }
 
 export const VIDEO_MODELS: VideoModelInfo[] = [
-  { value: "v3", label: "可灵 v3", blurb: "图生视频 · 分镜" },
-  { value: "v2-6", label: "可灵 v2.6", blurb: "快速 · 5/10s" },
   { value: "v3-omni", label: "可灵 v3 Omni", blurb: "多模态参考" },
   { value: "seedance-2.0", label: "Seedance 2.0", blurb: "多参考 · 4K" },
   { value: "seedance-2.0-fast", label: "Seedance 2.0 Fast", blurb: "极速 720p" },
