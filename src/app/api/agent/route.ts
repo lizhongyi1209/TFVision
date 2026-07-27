@@ -244,8 +244,8 @@ const VIDEO_GENERATION_TOOL = {
       sound: { type: "boolean", description: "Whether the model should generate sound when supported." },
       aspectRatio: {
         type: "string",
-        enum: ["智能", "16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
-        description: "Output aspect ratio.",
+        enum: ["智能", "16:9", "4:3", "1:1", "3:4", "9:16"],
+        description: "Output aspect ratio. Kling v3 Omni only supports 智能, 16:9, 9:16, and 1:1; Seedance also supports 4:3 and 3:4.",
       },
       note: { type: "string", description: "Short Chinese status note describing the video plan." },
       outputDirectory: { type: "string", description: "Absolute local output directory explicitly requested by the user. Omit when none was given." },
@@ -265,15 +265,19 @@ function normalizeVideoPlan(rawArguments: string, messages: AgentInputMessage[])
     : ["720p", "1080p", "4K"];
   const mode = allowedModes.includes(parsed?.mode as VideoResolution) ? parsed?.mode as VideoResolution : allowedModes[0];
   const duration = Math.max(model === "v3-omni" ? 3 : 4, Math.min(15, Math.round(Number(parsed?.duration) || 5)));
-  const ratios: VideoAspectRatio[] = ["智能", "16:9", "4:3", "1:1", "3:4", "9:16", "21:9"];
+  const ratios: VideoAspectRatio[] = model === "v3-omni"
+    ? ["智能", "16:9", "9:16", "1:1"]
+    : ["智能", "16:9", "4:3", "1:1", "3:4", "9:16"];
   const aspectRatio = ratios.includes(parsed?.aspectRatio as VideoAspectRatio)
     ? parsed?.aspectRatio as VideoAspectRatio
-    : "智能";
+    : model === "v3-omni" ? "16:9" : "智能";
   return {
     model,
     mode,
     duration,
-    prompt: typeof parsed?.prompt === "string" && parsed.prompt.trim() ? parsed.prompt.trim().slice(0, 32_000) : fallbackPrompt,
+    prompt: typeof parsed?.prompt === "string" && parsed.prompt.trim()
+      ? parsed.prompt.trim().slice(0, model === "v3-omni" ? 3072 : 32_000)
+      : fallbackPrompt.slice(0, model === "v3-omni" ? 3072 : 32_000),
     sound: parsed?.sound === true,
     aspectRatio,
     note: typeof parsed?.note === "string" && parsed.note.trim()

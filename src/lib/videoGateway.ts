@@ -22,6 +22,7 @@ const MODEL_RESOLUTIONS: Record<VideoModel, readonly VideoResolution[]> = {
 };
 
 const SEEDANCE_RATIOS = new Set<VideoAspectRatio>(["智能", "16:9", "4:3", "1:1", "3:4", "9:16"]);
+const KLING_OMNI_RATIOS = new Set<VideoAspectRatio>(["智能", "16:9", "9:16", "1:1"]);
 
 export function isSeedanceModel(model: string): boolean {
   return SEEDANCE_MODELS.has(model as VideoModel);
@@ -39,6 +40,26 @@ export function allowedVideoDurations(model: VideoModel): readonly number[] {
   if (model === "v2-6") return [5, 10];
   if (isSeedanceModel(model)) return [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
   return [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+}
+
+export function allowedVideoAspectRatios(model: VideoModel): readonly VideoAspectRatio[] {
+  if (isSeedanceModel(model)) return Array.from(SEEDANCE_RATIOS);
+  if (model === "v3-omni") return Array.from(KLING_OMNI_RATIOS);
+  return [];
+}
+
+export function supportsShots(model: VideoModel): boolean {
+  return model !== "v2-6" && !isSeedanceModel(model);
+}
+
+export function maxReferenceImages(model: VideoModel): number {
+  return isSeedanceModel(model) ? 9 : 7;
+}
+
+export function maxReferenceVideos(model: VideoModel): number {
+  if (isSeedanceModel(model)) return 3;
+  if (model === "v3-omni") return 1;
+  return 0;
 }
 
 function cleanUrls(values: unknown, limit: number): string[] {
@@ -59,6 +80,88 @@ function cleanUrls(values: unknown, limit: number): string[] {
     }
   }
   return urls;
+}
+
+export function buildKlingOmniGenerationBody(params: VideoJobParams): Record<string, unknown> {
+  if (params.model !== "v3-omni") throw new Error("不是可灵 3.0 Omni 模型");
+  if (!allowedVideoResolutions(params.model).includes(params.mode)) {
+    throw new Error(`可灵 Omni 不支持 ${params.mode} 分辨率`);
+  }
+  if (!allowedVideoDurations(params.model).includes(params.duration)) {
+    throw new Error("可灵 Omni 时长仅支持 3-15 秒的整数");
+  }
+
+  const shots = Array.isArray(params.shots) ? params.shots : [];
+  let promptText = (params.prompt ?? "").trim();
+  if (shots.length) {
+    if (shots.length > 6) throw new Error("可灵 Omni 最多支持 6 段分镜");
+    if (shots.some((shot) => !shot.prompt.trim() || shot.prompt.length > 512 || !Number.isInteger(shot.duration) || shot.duration < 1)) {
+      throw new Error("每段分镜需包含不超过 512 字的提示词和至少 1 秒的整数时长");
+    }
+    const total = shots.reduce((sum, shot) => sum + shot.duration, 0);
+    if (total !== params.duration) throw new Error(`分镜总时长 ${total}s 必须等于视频时长 ${params.duration}s`);
+    promptText = shots.map((shot, index) => `shot ${index + 1}, ${shot.duration}, ${shot.prompt.trim()};`).join(" ");
+  }
+  if (!promptText) throw new Error("提示词不能为空");
+  if (promptText.length > 3072) throw new Error("可灵 Omni 提示词不能超过 3072 字符");
+
+  const firstUrl = cleanUrls(params.imageUrl ? [params.imageUrl] : [], 1)[0];
+  const lastUrl = cleanUrls(params.tailUrl ? [params.tailUrl] : [], 1)[0];
+  const referenceUrls = cleanUrls(params.refUrls, 7);
+  const videoUrls = cleanUrls(params.videoUrls, 1);
+  const audioUrls = cleanUrls(params.audioUrls, 1);
+  if (audioUrls.length) throw new Error("可灵 Omni 不支持参考音频");
+  if (lastUrl && !firstUrl) throw new Error("可灵 Omni 不支持仅尾帧，请先添加首帧");
+
+  const referType = params.referType === "base" ? "base" : "feature";
+  const hasVideo = videoUrls.length > 0;
+  const hasBaseVideo = hasVideo && referType === "base";
+  const hasFeatureVideo = hasVideo && referType === "feature";
+  const imageTotal = referenceUrls.length + (firstUrl ? 1 : 0) + (lastUrl ? 1 : 0);
+  if (imageTotal > (hasVideo ? 4 : 7)) {
+    throw new Error(`当前组合最多支持 ${hasVideo ? 4 : 7} 张图片`);
+  }
+  if (hasBaseVideo && (firstUrl || lastUrl)) throw new Error("基础视频编辑模式不支持首尾帧");
+  if (hasBaseVideo && shots.length) throw new Error("基础视频编辑模式不支持分镜");
+
+  const audioMode = params.audioMode
+    ?? (params.keepOriginalSound ? "original" : params.sound ? "native" : "off");
+  if (hasFeatureVideo && audioMode !== "off") throw new Error("特征参考视频模式的音频只能关闭");
+  if (hasBaseVideo && audioMode === "native") throw new Error("基础视频编辑模式不支持生成原生音频");
+  if (!hasBaseVideo && audioMode === "original") throw new Error("只有基础视频编辑模式可以保留原声");
+
+  const ratio = params.aspectRatio ?? "智能";
+  if (!KLING_OMNI_RATIOS.has(ratio)) throw new Error("可灵 Omni 宽高比无效");
+  if (!firstUrl && !hasVideo && ratio === "智能") {
+    throw new Error("没有首帧或参考视频时必须选择 16:9、9:16 或 1:1");
+  }
+
+  const contents: Record<string, unknown>[] = [{ type: "prompt", text: promptText }];
+  let imageIndex = 1;
+  if (firstUrl) contents.push({ type: "first_frame", url: firstUrl, id: `image_${imageIndex++}` });
+  if (lastUrl) contents.push({ type: "last_frame", url: lastUrl, id: `image_${imageIndex++}` });
+  for (const url of referenceUrls) contents.push({ type: "refer_image", url, id: `image_${imageIndex++}` });
+  if (hasVideo) {
+    contents.push({
+      type: hasBaseVideo ? "base_video" : "feature_video",
+      url: videoUrls[0],
+      id: "video_1",
+    });
+  }
+
+  const settings: Record<string, unknown> = {
+    multi_shot: hasFeatureVideo ? true : hasBaseVideo ? false : shots.length > 0,
+    audio: audioMode,
+    resolution: params.mode === "4K" ? "4k" : params.mode,
+    duration: params.duration,
+  };
+  if (ratio !== "智能") settings.aspect_ratio = ratio;
+
+  return {
+    contents,
+    settings,
+    options: { watermark_info: { enabled: false } },
+  };
 }
 
 export function buildSeedanceGenerationBody(params: VideoJobParams): Record<string, unknown> {
@@ -88,6 +191,9 @@ export function buildSeedanceGenerationBody(params: VideoJobParams): Record<stri
 
   if ((firstUrl || lastUrl) && (referenceUrls.length || videoUrls.length || audioUrls.length)) {
     throw new Error("首尾帧模式不能与多模态参考素材混用");
+  }
+  if (audioUrls.length && !firstUrl && !referenceUrls.length && !videoUrls.length) {
+    throw new Error("参考音频不能单独提交，请同时添加图片或视频");
   }
 
   const images: Record<string, unknown>[] = [];

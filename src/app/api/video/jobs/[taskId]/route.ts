@@ -1,5 +1,5 @@
-// 视频任务轮询（移植自 TVision）：依次探测 Seedance 统一协议与 Kling 原生
-// 端点，返回归一化的 { status, progress, videoUrl, error }。
+// 视频任务轮询：优先使用可灵 3.0 Omni 的 /tasks?task_ids= 协议，
+// 再兼容 Seedance 与旧可灵端点，返回归一化任务状态和结果元数据。
 
 import { NextResponse } from "next/server";
 import { readSettings } from "@/lib/settings";
@@ -15,14 +15,19 @@ const RUNNING = new Set(["created", "queued", "pending", "running", "processing"
 
 function collectDicts(p: unknown): Record<string, unknown>[] {
   const dicts: Record<string, unknown>[] = [];
-  if (p && typeof p === "object") {
-    const r = p as Record<string, unknown>;
-    dicts.push(r);
-    if (r.data && typeof r.data === "object") {
-      const d = r.data as Record<string, unknown>;
-      dicts.push(d);
-      if (d.data && typeof d.data === "object") dicts.push(d.data as Record<string, unknown>);
+  const queue: unknown[] = [p];
+  const seen = new Set<unknown>();
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current || typeof current !== "object" || seen.has(current)) continue;
+    seen.add(current);
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
     }
+    const record = current as Record<string, unknown>;
+    dicts.push(record);
+    queue.push(...Object.values(record));
   }
   return dicts;
 }
@@ -83,7 +88,17 @@ function extractVideoUrlDeep(p: unknown): string | null {
 }
 
 function extractError(p: unknown): string {
-  for (const src of collectDicts(p)) {
+  const dicts = collectDicts(p);
+  const failedTask = dicts.find((src) => {
+    const status = String(src.status ?? src.task_status ?? src.state ?? "").toLowerCase();
+    return FAILURE.has(status) || status.includes("fail") || status.includes("error");
+  });
+  if (failedTask) {
+    for (const key of ["message", "fail_reason", "failure_reason", "task_status_msg", "detail"]) {
+      if (failedTask[key]) return String(failedTask[key]);
+    }
+  }
+  for (const src of dicts) {
     const err = src.error;
     if (err && typeof err === "object") {
       const e = err as Record<string, unknown>;
@@ -107,6 +122,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ taskId: string
   const headers = { Authorization: `Bearer ${s.apiKey}` };
 
   const endpoints = [
+    `/tasks?task_ids=${encodeURIComponent(taskId)}`,
     `/v1/video/generations/${encodeURIComponent(taskId)}`,
     `/v1/tasks/${encodeURIComponent(taskId)}`,
     `/kling/v1/videos/image2video/${encodeURIComponent(taskId)}`,
@@ -164,7 +180,22 @@ export async function GET(_req: Request, ctx: { params: Promise<{ taskId: string
     if (!videoUrl) {
       return NextResponse.json({ status: "failed", progress: 100, error: "成功但未返回视频 URL" });
     }
-    return NextResponse.json({ status: "success", progress: 100, videoUrl });
+    const dicts = collectDicts(payload);
+    const root = dicts[0];
+    const videoOutput = dicts.find((entry) => String(entry.type ?? "").toLowerCase() === "video" && entry.url === videoUrl);
+    const task = dicts.find((entry) => String(entry.id ?? "") === taskId && entry.status != null);
+    const billing = Array.isArray(task?.billing)
+      ? task.billing.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object" && !Array.isArray(entry))
+      : [];
+    return NextResponse.json({
+      status: "success",
+      progress: 100,
+      videoUrl,
+      watermarkUrl: typeof videoOutput?.watermark_url === "string" ? videoOutput.watermark_url : undefined,
+      outputDuration: videoOutput?.duration != null ? String(videoOutput.duration) : undefined,
+      requestId: typeof root?.request_id === "string" ? root.request_id : undefined,
+      billing,
+    });
   }
 
   return NextResponse.json({ status: "running", progress });

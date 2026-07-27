@@ -91,14 +91,33 @@ export function NodeShell({
     const startW = width;
     const bodyEl = wrapRef.current?.querySelector<HTMLElement>("[data-body]");
     const startH = height ?? (bodyEl ? bodyEl.getBoundingClientRect().height / zoom : 240);
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = "none";
+    let resizing = true;
+    const cleanup = () => {
+      if (!resizing) return;
+      resizing = false;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      window.removeEventListener("blur", cleanup);
+      document.body.style.userSelect = previousUserSelect;
+    };
     const onMove = (ev: PointerEvent) => {
+      // Native video controls and window boundaries can swallow pointerup.
+      // The buttons bitmask lets the next move terminate a stale resize anyway.
+      if ((ev.buttons & 1) === 0) {
+        cleanup();
+        return;
+      }
       const w = Math.round(Math.max(300, Math.min(920, startW + (ev.clientX - startX) / zoom)));
       const h = Math.round(Math.max(150, Math.min(1000, startH + (ev.clientY - startY) / zoom)));
       updateNode(id, { width: w, height: h });
     };
-    const onUp = () => window.removeEventListener("pointermove", onMove);
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp, { once: true });
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
+    window.addEventListener("blur", cleanup);
   };
 
   return (

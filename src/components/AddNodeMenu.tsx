@@ -77,7 +77,12 @@ export function AddNodeMenu() {
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.97 }}
         transition={{ type: "spring", stiffness: 500, damping: 32 }}
-        className="glass fixed z-[90] w-[232px] rounded-panel p-1.5"
+        onMouseDown={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+        className="glass fixed z-[90] w-[232px] select-none rounded-panel p-1.5"
         style={{ left: x, top: y }}
       >
         <div className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium text-fg-mute">

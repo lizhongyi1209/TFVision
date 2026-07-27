@@ -25,6 +25,7 @@ import {
   type JobStatusResponse,
   type NodeKind,
   type PublicSettings,
+  type ShotSegment,
   type TextNodeData,
   type VideoNodeData,
   type VideoReferenceAsset,
@@ -108,7 +109,15 @@ export function defaultVideoData(label: string): VideoNodeData {
     duration: 5,
     aspectRatio: "智能",
     sound: false,
+    audioMode: "off",
+    negativePrompt: "",
+    webSearch: false,
     cameraFixed: false,
+    seedText: "",
+    referType: "feature",
+    keepOriginalSound: false,
+    shotsEnabled: false,
+    shots: [],
     inputMode: "references",
     referenceAssets: [],
     keyframeAssets: [],
@@ -126,7 +135,7 @@ function clearPoll(nodeId: string) {
   pollTimers.delete(nodeId);
 }
 
-async function ensurePublicVideoReferenceUrl(asset: VideoReferenceAsset): Promise<string> {
+async function ensurePublicVideoReferenceUrl(asset: VideoReferenceAsset, model: VideoNodeData["model"]): Promise<string> {
   if (typeof asset.url === "string" && /^https?:\/\//i.test(asset.url)) return asset.url;
   let blob: Blob | null = null;
   if (asset.localKey) blob = await readVideoReferenceBlob(asset.localKey);
@@ -136,6 +145,7 @@ async function ensurePublicVideoReferenceUrl(asset: VideoReferenceAsset): Promis
   if (!blob) throw new Error(`${asset.name} 的本地文件已失效，请重新添加`);
   const form = new FormData();
   form.append("file", blob, asset.name);
+  form.append("model", model);
   const response = await fetch("/api/video/upload", { method: "POST", body: form });
   const payload = (await response.json().catch(() => ({}))) as { url?: string; error?: string };
   if (!response.ok || !payload.url) throw new Error(payload.error || `${asset.name} 上传失败`);
@@ -184,6 +194,22 @@ function nextGeneratedImageLabel(baseLabel: string, nodes: AppNode[], ignoredNod
   let suffix = 1;
   while (usedLabels.has(`${base}${suffix}`)) suffix += 1;
   return `${base}${suffix}`;
+}
+
+function nextGeneratedVideoLabel(baseLabel: string, nodes: AppNode[]) {
+  const base = `${baseLabel.trim() || "视频节点"} · 结果`;
+  const usedLabels = new Set(
+    nodes.flatMap((candidate) => {
+      if (candidate.type !== "video") return [];
+      const label = String((candidate.data as VideoNodeData).label ?? "").trim();
+      return label ? [label] : [];
+    }),
+  );
+  if (!usedLabels.has(base)) return base;
+
+  let suffix = 2;
+  while (usedLabels.has(`${base} ${suffix}`)) suffix += 1;
+  return `${base} ${suffix}`;
 }
 
 function absoluteNodePosition(node: AppNode, nodes: AppNode[]): XYPosition {
@@ -896,13 +922,39 @@ export const useStudio = create<StudioState>((set, get) => ({
     const node = state.nodes.find((n) => n.id === nodeId);
     if (!node || node.type !== "video") return;
     const data = node.data as VideoNodeData;
-    if (data.status === "running") return;
+    if (data.isGeneratedResult) return;
 
     // 视频节点的提示词与多模态素材都由自身对话框管理；暂不读取上游连线。
     const prompt = data.prompt.trim();
-    if (!prompt) {
+    const shotsEnabled = data.shotsEnabled === true;
+    const shots: ShotSegment[] = Array.isArray(data.shots) ? data.shots : [];
+    if (!shotsEnabled && !prompt) {
       get().showToast("请先输入视频提示词", "error");
       return;
+    }
+    if (!shotsEnabled && data.model === "v3-omni" && prompt.length > 3072) {
+      get().showToast("可灵 Omni 提示词不能超过 3072 字符", "error");
+      return;
+    }
+    if (shotsEnabled) {
+      if (data.model === "seedance-2.0" || data.model === "seedance-2.0-fast" || data.model === "v2-6") {
+        get().showToast("当前模型不支持分镜模式", "error");
+        return;
+      }
+      if (!shots.length || shots.length > 6) {
+        get().showToast("分镜数量需要为 1-6 段", "error");
+        return;
+      }
+      const invalidShot = shots.find((shot) => !shot.prompt.trim() || shot.prompt.length > 512 || !Number.isInteger(shot.duration) || shot.duration < 1);
+      if (invalidShot) {
+        get().showToast(`第 ${invalidShot.index} 段分镜需为 1 秒以上，且提示词不超过 512 字符`, "error");
+        return;
+      }
+      const total = shots.reduce((sum, shot) => sum + shot.duration, 0);
+      if (total !== data.duration) {
+        get().showToast(`各分镜时长之和 (${total}s) 必须等于总时长 (${data.duration}s)`, "error");
+        return;
+      }
     }
     const referenceAssets = Array.isArray(data.referenceAssets) ? data.referenceAssets.filter(Boolean) : [];
     const referenceImages = referenceAssets.filter((asset) => asset.kind === "image");
@@ -913,8 +965,9 @@ export const useStudio = create<StudioState>((set, get) => ({
       ? data.keyframeAssets.filter((asset) => asset && asset.kind === "image")
       : [];
     const firstFrameAsset = keyframeAssets.find((asset) => asset.role === "first_frame");
+    const lastFrameAsset = keyframeAssets.find((asset) => asset.role === "last_frame");
     const needsFrame = data.model === "v3" || data.model === "v2-6";
-    if (inputMode === "keyframes" && !firstFrameAsset) {
+    if (inputMode === "keyframes" && needsFrame && !firstFrameAsset) {
       get().showToast("首尾帧模式需要添加首帧图片", "error");
       return;
     }
@@ -922,7 +975,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       get().showToast("该旧模型需要至少一张参考图作为首帧", "error");
       return;
     }
-    if (inputMode === "references" && data.model === "v3-omni") {
+    if (data.model === "v3-omni") {
       if (referenceAudios.length) {
         get().showToast("可灵 v3 Omni 暂不支持参考音频，请移除音频或切换 Seedance", "error");
         return;
@@ -931,66 +984,177 @@ export const useStudio = create<StudioState>((set, get) => ({
         get().showToast("可灵 v3 Omni 最多支持 1 段参考视频", "error");
         return;
       }
+      if (lastFrameAsset && !firstFrameAsset) {
+        get().showToast("可灵 Omni 不支持仅尾帧，请先添加首帧", "error");
+        return;
+      }
       const imageLimit = referenceVideos.length ? 4 : 7;
-      if (referenceImages.length > imageLimit) {
-        get().showToast(`当前组合下可灵 v3 Omni 最多支持 ${imageLimit} 张参考图`, "error");
+      const totalImages = referenceImages.length + keyframeAssets.length;
+      if (totalImages > imageLimit) {
+        get().showToast(`当前组合下可灵 v3 Omni 最多支持 ${imageLimit} 张图片`, "error");
+        return;
+      }
+      if (referenceVideos.length && data.referType === "base") {
+        if (shotsEnabled) {
+          get().showToast("视频编辑（base）模式不支持分镜", "error");
+          return;
+        }
+        if (keyframeAssets.length) {
+          get().showToast("视频编辑（base）模式不支持首尾帧", "error");
+          return;
+        }
+      }
+      const audioMode = data.audioMode ?? (data.keepOriginalSound ? "original" : data.sound ? "native" : "off");
+      if (referenceVideos.length && data.referType !== "base" && audioMode !== "off") {
+        get().showToast("视频参考（feature）模式必须关闭音频", "error");
+        return;
+      }
+      if (referenceVideos.length && data.referType === "base" && audioMode === "native") {
+        get().showToast("视频编辑（base）模式只能关闭音频或保留原声", "error");
+        return;
+      }
+      if ((!referenceVideos.length || data.referType !== "base") && audioMode === "original") {
+        get().showToast("只有视频编辑（base）模式可以保留原声", "error");
+        return;
+      }
+      if (!firstFrameAsset && !referenceVideos.length && data.aspectRatio === "智能") {
+        get().showToast("没有首帧或参考视频时，请选择 16:9、9:16 或 1:1", "error");
+        return;
+      }
+    }
+    if (inputMode === "references" && (data.model === "seedance-2.0" || data.model === "seedance-2.0-fast")) {
+      if (referenceImages.length > 9 || referenceVideos.length > 3 || referenceAudios.length > 3) {
+        get().showToast("Seedance 参考素材数量超出模型上限", "error");
+        return;
+      }
+      if (referenceAudios.length && !referenceImages.length && !referenceVideos.length) {
+        get().showToast("参考音频不能单独使用，请同时添加参考图片或参考视频", "error");
         return;
       }
     }
 
-    get().updateNode(nodeId, {
+    const sourcePosition = absoluteNodePosition(node, state.nodes);
+    const sourceWidth = data.width || 430;
+    const sourceHeight = data.height || 280;
+    const existingResults = state.nodes.filter(
+      (candidate) =>
+        candidate.type === "video" && (candidate.data as VideoNodeData).generationSourceId === nodeId,
+    );
+    const nextResultY = existingResults.length
+      ? Math.max(...existingResults.map((candidate) => absoluteNodePosition(candidate, state.nodes).y)) + Math.min(sourceHeight, 560) + 110
+      : sourcePosition.y;
+    const startedAt = Date.now();
+    const resultNodeId = get().addNode("video", {
+      x: sourcePosition.x + sourceWidth + 180,
+      y: nextResultY,
+    }, {
+      label: nextGeneratedVideoLabel(data.label, state.nodes),
+      url: null,
+      remoteUrl: undefined,
       status: "running",
       progress: 0,
       error: undefined,
+      startedAt,
       taskId: undefined,
-      startedAt: Date.now(),
+      prompt,
+      model: data.model,
+      mode: data.mode,
+      duration: data.duration,
+      aspectRatio: data.aspectRatio,
+      sound: data.sound,
+      audioMode: data.audioMode ?? "off",
+      negativePrompt: data.negativePrompt,
+      webSearch: data.webSearch,
+      cameraFixed: data.cameraFixed,
+      seedText: data.seedText,
+      referType: data.referType,
+      keepOriginalSound: data.keepOriginalSound,
+      shotsEnabled,
+      shots: shotsEnabled ? shots : [],
+      inputMode,
+      sourceVideo: undefined,
+      referenceAssets: [],
+      keyframeAssets: [],
+      width: sourceWidth,
+      height: sourceHeight,
+      isGeneratedResult: true,
+      generationSourceId: nodeId,
     });
+    const generationEdge: Edge = {
+      id: `e-generate-${nodeId}-${resultNodeId}`,
+      source: nodeId,
+      target: resultNodeId,
+      animated: true,
+      className: "tf-generation-edge",
+      data: { generation: true },
+    };
+    set({ edges: [...get().edges, generationEdge] });
+    get().scheduleSave();
 
-    try {
-      const activeAssets = inputMode === "keyframes" ? keyframeAssets : referenceAssets;
-      const resolvedAssets = await Promise.all(activeAssets.map(async (asset) => ({
-        ...asset,
-        url: await ensurePublicVideoReferenceUrl(asset),
-      })));
-      const assetField = inputMode === "keyframes" ? "keyframeAssets" : "referenceAssets";
-      get().updateNode(nodeId, { [assetField]: resolvedAssets });
-      const imageRefs = resolvedAssets.filter((asset) => asset.kind === "image").map((asset) => asset.url);
-      const videoRefs = resolvedAssets.filter((asset) => asset.kind === "video").map((asset) => asset.url);
-      const audioRefs = resolvedAssets.filter((asset) => asset.kind === "audio").map((asset) => asset.url);
-      const firstFrameUrl = resolvedAssets.find((asset) => asset.role === "first_frame")?.url;
-      const lastFrameUrl = resolvedAssets.find((asset) => asset.role === "last_frame")?.url;
-      const res = await fetch("/api/video/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: data.model,
-          mode: data.mode,
-          duration: data.duration,
-          prompt,
-          sound: data.sound,
-          cameraFixed: data.cameraFixed,
-          aspectRatio: data.aspectRatio,
-          imageUrl: inputMode === "keyframes" ? firstFrameUrl : needsFrame ? imageRefs[0] : undefined,
-          tailUrl: inputMode === "keyframes" ? lastFrameUrl : undefined,
-          refUrls: inputMode === "keyframes" || needsFrame ? undefined : imageRefs,
-          videoUrls: inputMode === "keyframes" || needsFrame ? undefined : videoRefs,
-          audioUrls: inputMode === "keyframes" || needsFrame ? undefined : audioRefs,
-        }),
-      });
-      const payload = (await res.json()) as { taskId?: string; error?: string };
-      if (!res.ok || !payload.taskId) throw new Error(payload.error || "视频任务提交失败");
-      get().updateNode(nodeId, { taskId: payload.taskId });
-      pollVideoNode(nodeId, payload.taskId, prompt, set, get);
-    } catch (e) {
-      get().updateNode(nodeId, {
-        status: "failed",
-        error: (e as Error).message,
-        progress: 0,
-        taskId: undefined,
-        startedAt: undefined,
-      });
-      get().showToast((e as Error).message, "error");
-    }
+    // Keep the configuration node editable while submission and polling belong
+    // exclusively to the newly-created result node.
+    void (async () => {
+      try {
+        const resolveAssets = (assets: VideoReferenceAsset[]) => Promise.all(assets.map(async (asset) => ({
+          ...asset,
+          url: await ensurePublicVideoReferenceUrl(asset, data.model),
+        })));
+        const [resolvedReferences, resolvedKeyframes] = data.model === "v3-omni"
+          ? await Promise.all([resolveAssets(referenceAssets), resolveAssets(keyframeAssets)])
+          : inputMode === "keyframes"
+            ? [referenceAssets, await resolveAssets(keyframeAssets)]
+            : [await resolveAssets(referenceAssets), keyframeAssets];
+        if (!videoResultIsRunning(resultNodeId, get)) return;
+        get().updateNode(nodeId, { referenceAssets: resolvedReferences, keyframeAssets: resolvedKeyframes });
+        const imageRefs = resolvedReferences.filter((asset) => asset.kind === "image").map((asset) => asset.url);
+        const videoRefs = resolvedReferences.filter((asset) => asset.kind === "video").map((asset) => asset.url);
+        const audioRefs = resolvedReferences.filter((asset) => asset.kind === "audio").map((asset) => asset.url);
+        const firstFrameUrl = resolvedKeyframes.find((asset) => asset.role === "first_frame")?.url;
+        const lastFrameUrl = resolvedKeyframes.find((asset) => asset.role === "last_frame")?.url;
+        const res = await fetch("/api/video/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: data.model,
+            mode: data.mode,
+            duration: data.duration,
+            prompt,
+            negativePrompt: data.negativePrompt ?? "",
+            sound: data.sound,
+            audioMode: data.audioMode ?? (data.keepOriginalSound ? "original" : data.sound ? "native" : "off"),
+            webSearch: data.webSearch === true,
+            cameraFixed: data.cameraFixed === true,
+            seed: data.seedText?.trim() ? Number(data.seedText) : undefined,
+            aspectRatio: data.aspectRatio,
+            referType: data.referType ?? "feature",
+            keepOriginalSound: data.keepOriginalSound === true,
+            shots: shotsEnabled ? shots : [],
+            imageUrl: data.model === "v3-omni" || inputMode === "keyframes" ? firstFrameUrl : needsFrame ? imageRefs[0] : undefined,
+            tailUrl: data.model === "v3-omni" || inputMode === "keyframes" ? lastFrameUrl : undefined,
+            refUrls: data.model === "v3-omni" || (!needsFrame && inputMode !== "keyframes") ? imageRefs : undefined,
+            videoUrls: data.model === "v3-omni" || (!needsFrame && inputMode !== "keyframes") ? videoRefs : undefined,
+            audioUrls: data.model === "v3-omni" || (!needsFrame && inputMode !== "keyframes") ? audioRefs : undefined,
+          }),
+        });
+        const payload = (await res.json()) as { taskId?: string; error?: string };
+        if (!res.ok || !payload.taskId) throw new Error(payload.error || "视频任务提交失败");
+        if (!videoResultIsRunning(resultNodeId, get)) return;
+        get().updateNode(resultNodeId, { taskId: payload.taskId });
+        pollVideoNode(resultNodeId, payload.taskId, prompt, set, get);
+      } catch (e) {
+        if (!videoResultIsRunning(resultNodeId, get)) return;
+        const message = e instanceof Error ? e.message : "视频任务提交失败";
+        get().updateNode(resultNodeId, {
+          status: "failed",
+          error: message,
+          progress: 0,
+          taskId: undefined,
+          startedAt: undefined,
+        });
+        settleGenerationEdge(resultNodeId, "failed", set, get);
+        get().showToast(message, "error");
+      }
+    })();
   },
 
   // ── 视觉反推 ────────────────────────────────────────────────────────────────
@@ -1227,6 +1391,11 @@ function imageResultIsRunning(nodeId: string, get: GetFn): boolean {
   return node?.type === "image" && (node.data as ImageNodeData).status === "running";
 }
 
+function videoResultIsRunning(nodeId: string, get: GetFn): boolean {
+  const node = get().nodes.find((candidate) => candidate.id === nodeId);
+  return node?.type === "video" && (node.data as VideoNodeData).status === "running";
+}
+
 function settleGenerationEdge(
   resultNodeId: string,
   status: "success" | "failed" | "cancelled",
@@ -1328,13 +1497,22 @@ function pollImageNode(
   pollTimers.set(nodeId, setTimeout(tick, 1600));
 }
 
-function pollVideoNode(nodeId: string, taskId: string, prompt: string, _set: SetFn, get: GetFn) {
+function pollVideoNode(nodeId: string, taskId: string, prompt: string, set: SetFn, get: GetFn) {
   clearPoll(nodeId);
   const startedAt = ((get().nodes.find((n) => n.id === nodeId)?.data as VideoNodeData | undefined)?.startedAt) ?? Date.now();
 
   const tick = async () => {
     if (!nodeExists(get, nodeId)) return clearPoll(nodeId);
-    let payload: { status: string; progress?: number; videoUrl?: string; error?: string };
+    let payload: {
+      status: string;
+      progress?: number;
+      videoUrl?: string;
+      error?: string;
+      watermarkUrl?: string;
+      outputDuration?: string;
+      requestId?: string;
+      billing?: VideoNodeData["billing"];
+    };
     try {
       const statusRes = await fetch(`/api/video/jobs/${encodeURIComponent(taskId)}`);
       const statusPayload = (await statusRes.json().catch(() => ({}))) as {
@@ -1342,6 +1520,10 @@ function pollVideoNode(nodeId: string, taskId: string, prompt: string, _set: Set
         progress?: number;
         videoUrl?: string;
         error?: string;
+        watermarkUrl?: string;
+        outputDuration?: string;
+        requestId?: string;
+        billing?: VideoNodeData["billing"];
       };
       if (!statusRes.ok) {
         if (statusRes.status === 429 || statusRes.status >= 500) {
@@ -1359,6 +1541,10 @@ function pollVideoNode(nodeId: string, taskId: string, prompt: string, _set: Set
           progress: statusPayload.progress,
           videoUrl: statusPayload.videoUrl,
           error: statusPayload.error,
+          watermarkUrl: statusPayload.watermarkUrl,
+          outputDuration: statusPayload.outputDuration,
+          requestId: statusPayload.requestId,
+          billing: statusPayload.billing,
         };
       }
     } catch {
@@ -1385,7 +1571,11 @@ function pollVideoNode(nodeId: string, taskId: string, prompt: string, _set: Set
               duration: d?.duration ?? 5,
               prompt,
               sound: d?.sound ?? false,
+              audioMode: d?.audioMode,
               aspectRatio: d?.aspectRatio ?? "智能",
+              requestId: payload.requestId,
+              outputDuration: payload.outputDuration,
+              billing: payload.billing,
               createdAt: Date.now(),
             },
           }),
@@ -1397,6 +1587,10 @@ function pollVideoNode(nodeId: string, taskId: string, prompt: string, _set: Set
           progress: 100,
           url,
           remoteUrl: payload.videoUrl,
+          watermarkUrl: payload.watermarkUrl,
+          outputDuration: payload.outputDuration,
+          requestId: payload.requestId,
+          billing: payload.billing,
           startedAt: undefined,
         });
       } catch {
@@ -1405,9 +1599,14 @@ function pollVideoNode(nodeId: string, taskId: string, prompt: string, _set: Set
           progress: 100,
           url: payload.videoUrl,
           remoteUrl: payload.videoUrl,
+          watermarkUrl: payload.watermarkUrl,
+          outputDuration: payload.outputDuration,
+          requestId: payload.requestId,
+          billing: payload.billing,
           startedAt: undefined,
         });
       }
+      settleGenerationEdge(nodeId, "success", set, get);
       get().showToast("视频生成完成", "success");
       return;
     }
@@ -1416,6 +1615,7 @@ function pollVideoNode(nodeId: string, taskId: string, prompt: string, _set: Set
       clearPoll(nodeId);
       const msg = payload.error || "视频生成失败";
       patchNode(get, nodeId, { status: "failed", progress: 0, error: msg, startedAt: undefined });
+      settleGenerationEdge(nodeId, "failed", set, get);
       get().showToast(msg, "error");
       return;
     }

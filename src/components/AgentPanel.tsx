@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { useStudio } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { MODELS } from "@/lib/models";
-import type { AgentImagePlan, AgentVideoPlan, HistoryItem, ModelName } from "@/lib/types";
+import type { AgentImagePlan, AgentVideoPlan, HistoryItem, ModelName, VideoBillingEntry } from "@/lib/types";
 import { deleteAgentMedia, loadAgentMedia, persistAgentMedia } from "@/lib/agentMediaStore";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { Icon } from "./icons";
@@ -1065,6 +1065,7 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
       if (dataUrl) {
         const form = new FormData();
         form.append("file", await (await fetch(dataUrl)).blob(), "agent-first-frame.png");
+        form.append("model", plan.model);
         const uploadResponse = await fetch("/api/video/upload", { method: "POST", body: form });
         const uploadPayload = (await uploadResponse.json().catch(() => ({}))) as { url?: string; error?: string };
         if (!uploadResponse.ok || !uploadPayload.url) throw new Error(uploadPayload.error || "视频首帧上传失败");
@@ -1085,7 +1086,8 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
         duration: plan.duration,
         prompt: plan.prompt,
         sound: plan.sound,
-        aspectRatio: plan.aspectRatio,
+        audioMode: plan.model === "v3-omni" ? plan.sound ? "native" : "off" : undefined,
+        aspectRatio: plan.model === "v3-omni" && !imageUrl && plan.aspectRatio === "智能" ? "16:9" : plan.aspectRatio,
         imageUrl,
       }),
     });
@@ -1097,6 +1099,9 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
     const taskId = submitPayload.taskId;
     const deadline = Date.now() + 15 * 60_000;
     let remoteUrl = "";
+    let videoRequestId: string | undefined;
+    let videoOutputDuration: string | undefined;
+    let videoBilling: VideoBillingEntry[] | undefined;
     while (Date.now() < deadline) {
       const pollResponse = await fetch(`/api/video/jobs/${encodeURIComponent(taskId)}`);
       const pollPayload = (await pollResponse.json().catch(() => ({}))) as {
@@ -1104,13 +1109,19 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
         progress?: number;
         videoUrl?: string;
         error?: string;
+        requestId?: string;
+        outputDuration?: string;
+        billing?: VideoBillingEntry[];
       };
       if (pollPayload.status === "success" && pollPayload.videoUrl) {
         remoteUrl = pollPayload.videoUrl;
+        videoRequestId = pollPayload.requestId;
+        videoOutputDuration = pollPayload.outputDuration;
+        videoBilling = pollPayload.billing;
         break;
       }
       if (pollPayload.status === "failed") throw new Error(pollPayload.error || "视频生成失败");
-      const progress = typeof pollPayload.progress === "number" ? ` · ${Math.round(pollPayload.progress * 100)}%` : "";
+      const progress = typeof pollPayload.progress === "number" ? ` · ${Math.round(pollPayload.progress)}%` : "";
       advanceAgentActivity(`生成视频${progress}`, { replaceActive: true });
       await mediaTools.waitForImageRetry(5_000);
     }
@@ -1131,7 +1142,11 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
           duration: plan.duration,
           prompt: plan.prompt,
           sound: plan.sound,
-          aspectRatio: plan.aspectRatio,
+          audioMode: plan.model === "v3-omni" ? plan.sound ? "native" : "off" : undefined,
+          aspectRatio: plan.model === "v3-omni" && !imageUrl && plan.aspectRatio === "智能" ? "16:9" : plan.aspectRatio,
+          requestId: videoRequestId,
+          outputDuration: videoOutputDuration,
+          billing: videoBilling,
           createdAt: Date.now(),
         },
       }),

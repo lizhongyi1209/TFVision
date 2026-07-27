@@ -3,6 +3,11 @@
 // 本地开发路径）。
 
 import { NextResponse } from "next/server";
+import { execFile } from "child_process";
+import { promises as fs } from "fs";
+import os from "os";
+import path from "path";
+import { promisify } from "util";
 import { readSettings } from "@/lib/settings";
 import { resolveBaseUrl } from "@/lib/o1key";
 
@@ -10,17 +15,72 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MB = 1024 * 1024;
+const execFileAsync = promisify(execFile);
 const MEDIA_TYPES: Record<string, { contentType: string; extension: string; maxBytes: number; kind: string }> = {
-  "image/jpeg": { contentType: "image/jpeg", extension: "jpg", maxBytes: 30 * MB, kind: "image" },
-  "image/jpg": { contentType: "image/jpeg", extension: "jpg", maxBytes: 30 * MB, kind: "image" },
-  "image/png": { contentType: "image/png", extension: "png", maxBytes: 30 * MB, kind: "image" },
-  "image/webp": { contentType: "image/webp", extension: "webp", maxBytes: 30 * MB, kind: "image" },
+  "image/jpeg": { contentType: "image/jpeg", extension: "jpg", maxBytes: 50 * MB, kind: "image" },
+  "image/jpg": { contentType: "image/jpeg", extension: "jpg", maxBytes: 50 * MB, kind: "image" },
+  "image/png": { contentType: "image/png", extension: "png", maxBytes: 50 * MB, kind: "image" },
+  "image/webp": { contentType: "image/webp", extension: "webp", maxBytes: 50 * MB, kind: "image" },
   "video/mp4": { contentType: "video/mp4", extension: "mp4", maxBytes: 200 * MB, kind: "video" },
   "video/quicktime": { contentType: "video/quicktime", extension: "mov", maxBytes: 200 * MB, kind: "video" },
   "audio/wav": { contentType: "audio/wav", extension: "wav", maxBytes: 15 * MB, kind: "audio" },
   "audio/mpeg": { contentType: "audio/mpeg", extension: "mp3", maxBytes: 15 * MB, kind: "audio" },
   "audio/mp3": { contentType: "audio/mpeg", extension: "mp3", maxBytes: 15 * MB, kind: "audio" },
 };
+
+function parseFrameRate(value: unknown): number {
+  const [numerator, denominator = 1] = String(value ?? "0/1").split("/", 2).map(Number);
+  return denominator ? numerator / denominator : 0;
+}
+
+async function validateKlingOmniMedia(
+  bytes: Buffer,
+  spec: { extension: string; kind: string },
+): Promise<string | null> {
+  if (spec.kind === "audio") return "可灵 Omni 不支持参考音频";
+  if (spec.kind === "image" && spec.extension === "webp") return "可灵 Omni 图片仅支持 JPG、JPEG 或 PNG";
+
+  const tempPath = path.join(os.tmpdir(), `tfvision-omni-${crypto.randomUUID()}.${spec.extension}`);
+  try {
+    await fs.writeFile(tempPath, bytes);
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate:format=duration",
+      "-of", "json",
+      tempPath,
+    ], { timeout: 15_000, windowsHide: true, maxBuffer: 1024 * 1024 });
+    const payload = JSON.parse(stdout) as {
+      streams?: Array<{ width?: number; height?: number; avg_frame_rate?: string; r_frame_rate?: string }>;
+      format?: { duration?: string };
+    };
+    const stream = payload.streams?.[0];
+    const width = Number(stream?.width);
+    const height = Number(stream?.height);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      return "无法读取素材画面尺寸";
+    }
+    const ratio = width / height;
+    if (spec.kind === "image") {
+      if (width < 300 || height < 300) return "可灵 Omni 图片宽高均不能小于 300px";
+      if (ratio < 0.4 || ratio > 2.5) return "可灵 Omni 图片宽高比必须在 1:2.5 到 2.5:1 之间";
+      return null;
+    }
+
+    const duration = Number(payload.format?.duration);
+    const frameRate = parseFrameRate(stream?.avg_frame_rate ?? stream?.r_frame_rate);
+    if (!Number.isFinite(duration) || duration < 3 || duration > 15.5) return "参考视频时长必须在 3-15.5 秒之间";
+    if (width < 700 || height < 700 || width > 4553 || height > 4553) return "参考视频宽高必须在 700-4553px 之间";
+    if (width * height > 8_294_400) return "参考视频总像素不能超过 8294400";
+    if (ratio < 0.4 || ratio > 2) return "参考视频宽高比必须在 0.4-2 之间";
+    if (!Number.isFinite(frameRate) || frameRate < 24 || frameRate > 60) return "参考视频帧率必须在 24-60fps 之间";
+    return null;
+  } catch {
+    return "无法读取素材媒体信息，请确认文件未损坏且编码受支持";
+  } finally {
+    await fs.unlink(tempPath).catch(() => undefined);
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -64,6 +124,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: `素材大小超过 ${spec.maxBytes / MB}MB 上限` }, { status: 400 });
   }
 
+  const bytes = Buffer.from(await file.arrayBuffer());
+  if (String(formData.get("model") ?? "") === "v3-omni") {
+    const validationError = await validateKlingOmniMedia(bytes, spec);
+    if (validationError) return NextResponse.json({ error: validationError }, { status: 400 });
+  }
+
   const baseUrl = resolveBaseUrl(s.route);
   const filename = `${crypto.randomUUID()}.${spec.extension}`;
 
@@ -92,7 +158,6 @@ export async function POST(req: Request) {
       }
     }
 
-    const bytes = Buffer.from(await file.arrayBuffer());
     const uploadRes = await fetch(uploadUrl, {
       method: presign.method,
       headers,

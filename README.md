@@ -47,7 +47,8 @@ npm run build && npm run start   # 生产模式（推荐，更快）
 ## 模型（复用 TVision / o1key）
 
 - **图片**：Nano Banana Pro（1K/2K/4K，质量最佳）· Nano Banana 2（512-4K，快速）· Nano Banana（1K）· GPT Image 2（1K-4K，画质档）；计费 特价/官方
-- **视频**：可灵 v3 / v2.6 / v3 Omni · Seedance 2.0 / 2.0 Fast（720p-4K，3-15s，音效/固定镜头）
+- **视频**：可灵 v3 / v2.6 / v3 Omni · Seedance 2.0 / 2.0 Fast（720p-4K，3-15s）；可灵支持负向提示词与最多 6 段自定义分镜，Omni 支持视频参考/视频编辑；Seedance 支持联网搜索、固定镜头、随机种子及图片/视频/音频多模态参考
+- **视频比例**：可灵 v3 Omni 为 智能 / 16:9 / 9:16 / 1:1；Seedance 2.0 另支持 4:3 / 3:4；“智能”不向上游发送比例字段
 - **反推**：gemini-3.1-pro-preview（/v1/chat/completions）
 
 ## 目录结构
@@ -77,5 +78,5 @@ TFvision/
 - **单栈本地应用**：Next.js 15 (App Router) + React 19 + TypeScript + Tailwind v4 + @xyflow/react (React Flow 12) + Zustand + Motion。Route Handlers 即本地后端 —— 令牌不进浏览器、天然绕过 CORS、承接大体积 base64。
 - **Agent 鉴权**：服务端直接使用设置中的 New API Bearer Token 调用模型接口，不启动任何模型 CLI，也不读取客户的官方账号登录状态。
 - **o1key 异步生图**：`POST /async/v1/generateImage` → `task_id`，轮询 `GET /async/v1/tasks/{id}`，成功后下载到 `output/` 经 `/api/media` 提供，自动进历史。
-- **视频**：可灵 `image2video` / `omni-video` + Seedance 统一协议 `/v1/video/generations`；参考图先经网关预签名上传拿公网 URL；成片下载到本地 `output/video-<taskId>.mp4`。
+- **视频**：可灵 3.0 Omni 通过上游前缀端点 `/kling/omni-video/kling-3.0-omni` 使用最新协议（`contents` / `settings` / `options`，水印固定关闭），任务通过 `/tasks?task_ids=` 查询；Seedance 使用统一协议 `/v1/video/generations`（`images` / `videos` / `audios`）。参考素材先经网关预签名上传拿公网 URL，成片下载到本地 `output/video-<taskId>.mp4`。
 - **画布持久化**：整个工作区（多画布 + 节点 + 连线 + 命名计数）防抖写入 `data/boards.json`，刷新不丢。

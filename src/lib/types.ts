@@ -64,6 +64,21 @@ export type SeedanceModel = "seedance-2.0" | "seedance-2.0-fast";
 export type VideoModel = KlingModel | SeedanceModel;
 export type VideoResolution = "480p" | "720p" | "1080p" | "4K";
 export type VideoAspectRatio = "智能" | "16:9" | "4:3" | "1:1" | "3:4" | "9:16" | "21:9";
+export type VideoReferType = "feature" | "base";
+export type VideoAudioMode = "native" | "original" | "off";
+
+export interface VideoBillingEntry {
+  charge_type?: string;
+  amount?: string;
+  package_type?: string;
+  list_price?: string;
+}
+
+export interface ShotSegment {
+  index: number;
+  prompt: string;
+  duration: number;
+}
 
 /** 前端发给 /api/video/jobs 的请求体。 */
 export interface VideoJobParams {
@@ -73,8 +88,9 @@ export interface VideoJobParams {
   prompt: string;
   negativePrompt?: string;
   sound: boolean;
+  /** Kling 3.0 Omni audio mode. Seedance continues to use `sound`. */
+  audioMode?: VideoAudioMode;
   aspectRatio?: VideoAspectRatio;
-  watermark?: boolean;
   webSearch?: boolean;
   cameraFixed?: boolean;
   seed?: number;
@@ -83,6 +99,12 @@ export interface VideoJobParams {
   refUrls?: string[];
   videoUrls?: string[];
   audioUrls?: string[];
+  /** 可灵 v3 Omni：feature=参考内容/风格/运镜，base=编辑原视频。 */
+  referType?: VideoReferType;
+  /** 可灵 v3 Omni：是否保留参考视频原声。 */
+  keepOriginalSound?: boolean;
+  /** 可灵多分镜；Seedance 2.0 不支持。 */
+  shots?: ShotSegment[];
 }
 
 export interface AgentVideoPlan {
@@ -104,7 +126,11 @@ export interface VideoMeta {
   duration: number;
   prompt: string;
   sound: boolean;
+  audioMode?: VideoAudioMode;
   aspectRatio: string;
+  requestId?: string;
+  outputDuration?: string;
+  billing?: VideoBillingEntry[];
   createdAt: number;
 }
 
@@ -227,6 +253,12 @@ export type VideoReferenceAsset = {
   /** Extracted first-frame thumbnail for local video previews. */
   previewUrl?: string;
   role?: VideoFrameRole;
+  mimeType?: string;
+  sizeBytes?: number;
+  width?: number;
+  height?: number;
+  duration?: number;
+  frameRate?: number;
 };
 
 export type VideoNodeData = {
@@ -244,12 +276,28 @@ export type VideoNodeData = {
   duration: number;
   aspectRatio: VideoAspectRatio;
   sound: boolean;
+  audioMode: VideoAudioMode;
+  negativePrompt: string;
+  webSearch: boolean;
   cameraFixed: boolean;
+  seedText: string;
+  referType: VideoReferType;
+  keepOriginalSound: boolean;
+  shotsEnabled: boolean;
+  shots: ShotSegment[];
   inputMode?: VideoInputMode;
   /** Imported/playable video owned by this node; separate from generation references. */
   sourceVideo?: VideoReferenceAsset;
   referenceAssets?: VideoReferenceAsset[];
   keyframeAssets?: VideoReferenceAsset[];
+  /** Generated video jobs render in a dedicated, presentation-only node. */
+  isGeneratedResult?: boolean;
+  /** Source/configuration video node that created this result. */
+  generationSourceId?: string;
+  requestId?: string;
+  watermarkUrl?: string;
+  outputDuration?: string;
+  billing?: VideoBillingEntry[];
   width?: number;
   height?: number;
   [key: string]: unknown;

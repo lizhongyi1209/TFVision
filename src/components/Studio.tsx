@@ -116,8 +116,13 @@ function Canvas() {
       // Only trigger on the pane itself, not inside nodes.
       const target = e.target as HTMLElement;
       if (!target.classList.contains("react-flow__pane")) return;
+      // Prevent the browser's native double-click selection from carrying over
+      // to the menu that is mounted under the pointer after this event.
+      e.preventDefault();
+      window.getSelection()?.removeAllRanges();
       const flowPosition = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
       openMenu({ flowPosition, screen: { x: e.clientX, y: e.clientY } });
+      requestAnimationFrame(() => window.getSelection()?.removeAllRanges());
     },
     [rf, openMenu],
   );
