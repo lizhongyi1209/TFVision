@@ -152,3 +152,14 @@ test("可灵 Omni 分镜编码、视频音频约束和必填比例符合最新�
     /音频只能关闭/,
   );
 });
+
+test("可灵 Omni AI 自动多镜头不需要自定义分镜文本", () => {
+  const body = buildKlingOmniGenerationBody(params({
+    model: "v3-omni",
+    aspectRatio: "16:9",
+    audioMode: "off",
+    shotMode: "auto",
+  }));
+  assert.equal((body.settings as Record<string, unknown>).multi_shot, true);
+  assert.deepEqual(body.contents, [{ type: "prompt", text: "雨夜街头的电影感镜头" }]);
+});

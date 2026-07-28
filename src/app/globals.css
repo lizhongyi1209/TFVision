@@ -87,6 +87,7 @@ body {
   animation: popover-enter 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
+
 /* Agent execution surface: brushed steel, kept monochrome so motion reads as status, not decoration. */
 @keyframes agent-steel-sweep {
   0% {
@@ -546,7 +547,7 @@ input {
 .tf-composer-prompt:focus,
 .tf-composer-prompt:focus-visible {
   outline: none;
-  border: none;
+  border-color: transparent;
   box-shadow: none;
 }
 .tf-richtext p {
@@ -671,13 +672,13 @@ input {
 
 /* Handles are rendered as ⊕ buttons by NodeShell; kill the default dot look. */
 .react-flow__handle.tf-port {
-  width: 22px;
-  height: 22px;
-  min-width: 22px;
-  min-height: 22px;
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  min-height: 38px;
   border-radius: 999px;
-  border: 1px solid var(--color-line-2);
-  background: var(--color-panel);
+  border: 0;
+  background: transparent;
   color: var(--color-fg-dim);
   display: flex;
   align-items: center;
@@ -685,6 +686,55 @@ input {
   opacity: 0;
   transition: opacity 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
   cursor: crosshair;
+  z-index: 24;
+}
+.tf-port-follow-zone {
+  position: absolute;
+  top: calc(var(--tf-port-top) - 92px);
+  z-index: 23;
+  width: 88px;
+  height: 184px;
+  pointer-events: none;
+  /* The visible half of this ellipse is the port's forgiving fan region. */
+  border-radius: 50%;
+}
+.tf-port-follow-zone--left {
+  left: -82px;
+  clip-path: inset(0 0 0 0 round 50%);
+}
+.tf-port-follow-zone--right {
+  right: -82px;
+  clip-path: inset(0 0 0 0 round 50%);
+}
+.tf-node-wrap:hover .tf-port-follow-zone,
+.tf-node-wrap.selected .tf-port-follow-zone {
+  pointer-events: auto;
+}
+.react-flow__handle.tf-port::before {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border: 1px solid var(--color-line-2);
+  border-radius: 999px;
+  background: var(--color-panel);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.react-flow__handle.tf-port::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: 34px;
+  height: 100%;
+}
+.react-flow__handle-left.tf-port::after {
+  left: 50%;
+}
+.react-flow__handle-right.tf-port::after {
+  right: 50%;
+}
+.react-flow__handle.tf-port > svg {
+  position: relative;
+  z-index: 1;
 }
 .tf-node-wrap:hover .react-flow__handle.tf-port,
 .react-flow__handle.tf-port.connectionindicator:hover,
@@ -692,9 +742,61 @@ input {
   opacity: 1;
 }
 .react-flow__handle.tf-port:hover {
-  border-color: var(--color-accent);
   color: var(--color-accent);
-  transform: scale(1.12);
+}
+.react-flow__handle.tf-port:hover::before {
+  border-color: var(--color-accent);
+}
+.react-flow__handle-left.tf-port:hover {
+  transform: translate(-50%, -50%) scale(1.08);
+}
+.react-flow__handle-right.tf-port:hover {
+  transform: translate(50%, -50%) scale(1.08);
+}
+
+/* Dual-handle video trim rail. The tracks are drawn by the component; only
+   the two precise handles receive pointer input. */
+.tf-trim-range {
+  appearance: none;
+  background: transparent;
+  pointer-events: none;
+  outline: none;
+}
+.tf-trim-range::-webkit-slider-runnable-track {
+  height: 32px;
+  background: transparent;
+}
+.tf-trim-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 24px;
+  margin-top: 4px;
+  border: 2px solid var(--color-ink);
+  border-radius: 5px;
+  background: var(--color-fg);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.42);
+  pointer-events: auto;
+  cursor: ew-resize;
+}
+.tf-trim-range--start::-webkit-slider-thumb {
+  border-radius: 7px 3px 3px 7px;
+}
+.tf-trim-range--end::-webkit-slider-thumb {
+  border-radius: 3px 7px 7px 3px;
+}
+.tf-trim-range::-moz-range-track {
+  height: 32px;
+  background: transparent;
+}
+.tf-trim-range::-moz-range-thumb {
+  width: 14px;
+  height: 24px;
+  border: 2px solid var(--color-ink);
+  border-radius: 5px;
+  background: var(--color-fg);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.42);
+  pointer-events: auto;
+  cursor: ew-resize;
 }
 
 /* Box-select rectangle */

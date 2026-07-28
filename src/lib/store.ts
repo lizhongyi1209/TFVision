@@ -32,9 +32,21 @@ import {
   type WorkspaceFile,
 } from "./types";
 import { downscaleImageSrc, fakeProgressCurve } from "./utils";
-import { forgetVideoReferenceBlob, readVideoReferenceBlob } from "./videoReferenceStorage";
+import {
+  forgetVideoReferenceBlob,
+  readVideoReferenceBlob,
+  rememberVideoReferenceBlob,
+} from "./videoReferenceStorage";
 
 export type AppNode = Node<TextNodeData | ImageNodeData | VideoNodeData | GroupNodeData>;
+
+export function canConnectNodeKinds(source: string | undefined, target: string | undefined): boolean {
+  if (!source || !target) return false;
+  if (source === "image") return target === "text" || target === "image" || target === "video";
+  if (source === "text") return target === "image" || target === "video";
+  if (source === "video") return target === "video";
+  return false;
+}
 
 export interface BoardMeta {
   id: string;
@@ -116,6 +128,8 @@ export function defaultVideoData(label: string): VideoNodeData {
     seedText: "",
     referType: "feature",
     keepOriginalSound: false,
+    shotMode: "auto",
+    shotModeExplicit: false,
     shotsEnabled: false,
     shots: [],
     inputMode: "references",
@@ -129,6 +143,65 @@ const pollTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const submitControllers = new Map<string, AbortController>();
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
+interface NodeClipboardSnapshot {
+  nodes: AppNode[];
+  edges: Edge[];
+  pasteCount: number;
+}
+
+let nodeClipboard: NodeClipboardSnapshot | null = null;
+
+function cloneSerializable<T>(value: T): T {
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function resetCopiedNodeData(node: AppNode): Record<string, unknown> {
+  const data = cloneSerializable(node.data) as Record<string, unknown>;
+  if (data.status === "running") data.status = "idle";
+  data.progress = data.status === "success" ? 100 : 0;
+  data.jobIds = [];
+  data.taskId = undefined;
+  data.startedAt = undefined;
+  data.error = undefined;
+  data.cancelledAt = undefined;
+  return data;
+}
+
+async function cloneLocalVideoAsset(asset: VideoReferenceAsset): Promise<VideoReferenceAsset> {
+  const next = cloneSerializable(asset);
+  const blob = asset.localKey
+    ? await readVideoReferenceBlob(asset.localKey)
+    : asset.localUrl?.startsWith("blob:")
+      ? await fetch(asset.localUrl).then((response) => response.ok ? response.blob() : null).catch(() => null)
+      : null;
+  if (!blob) {
+    if (next.localUrl?.startsWith("blob:")) delete next.localUrl;
+    delete next.localKey;
+    return next;
+  }
+  const key = `video-copy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  await rememberVideoReferenceBlob(key, blob);
+  return {
+    ...next,
+    id: key,
+    localKey: key,
+    localUrl: URL.createObjectURL(blob),
+  };
+}
+
+async function prepareCopiedNodeData(node: AppNode): Promise<Record<string, unknown>> {
+  const data = resetCopiedNodeData(node);
+  if (node.type !== "video") return data;
+  const videoData = data as VideoNodeData;
+  const [sourceVideo, referenceAssets, keyframeAssets] = await Promise.all([
+    videoData.sourceVideo ? cloneLocalVideoAsset(videoData.sourceVideo) : undefined,
+    Promise.all((videoData.referenceAssets ?? []).map(cloneLocalVideoAsset)),
+    Promise.all((videoData.keyframeAssets ?? []).map(cloneLocalVideoAsset)),
+  ]);
+  return { ...videoData, sourceVideo, referenceAssets, keyframeAssets };
+}
+
 function clearPoll(nodeId: string) {
   const t = pollTimers.get(nodeId);
   if (t) clearTimeout(t);
@@ -136,16 +209,24 @@ function clearPoll(nodeId: string) {
 }
 
 async function ensurePublicVideoReferenceUrl(asset: VideoReferenceAsset, model: VideoNodeData["model"]): Promise<string> {
-  if (typeof asset.url === "string" && /^https?:\/\//i.test(asset.url)) return asset.url;
+  const hasTrim = asset.kind === "video" && Number.isFinite(asset.trimStart) && Number.isFinite(asset.trimEnd);
+  if (!hasTrim && typeof asset.url === "string" && /^https?:\/\//i.test(asset.url)) return asset.url;
   let blob: Blob | null = null;
   if (asset.localKey) blob = await readVideoReferenceBlob(asset.localKey);
   if (!blob && asset.localUrl?.startsWith("blob:")) {
     blob = await fetch(asset.localUrl).then((response) => response.ok ? response.blob() : null).catch(() => null);
   }
+  if (!blob && typeof asset.url === "string" && asset.url) {
+    blob = await fetch(asset.url).then((response) => response.ok ? response.blob() : null).catch(() => null);
+  }
   if (!blob) throw new Error(`${asset.name} 的本地文件已失效，请重新添加`);
   const form = new FormData();
   form.append("file", blob, asset.name);
   form.append("model", model);
+  if (hasTrim) {
+    form.append("trimStart", String(asset.trimStart));
+    form.append("trimEnd", String(asset.trimEnd));
+  }
   const response = await fetch("/api/video/upload", { method: "POST", body: form });
   const payload = (await response.json().catch(() => ({}))) as { url?: string; error?: string };
   if (!response.ok || !payload.url) throw new Error(payload.error || `${asset.name} 上传失败`);
@@ -317,6 +398,8 @@ interface StudioState {
   removeEdge: (id: string) => void;
   updateNode: (id: string, patch: Record<string, unknown>) => void;
   duplicateNode: (id: string) => void;
+  copySelectedNodes: () => number;
+  pasteCopiedNodes: () => Promise<number>;
   createGroup: (nodeIds: string[]) => string | undefined;
   ungroupNode: (groupId: string) => void;
   renameWorkspace: (name: string) => void;
@@ -407,12 +490,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     const source = nodes.find((n) => n.id === conn.source);
     const target = nodes.find((n) => n.id === conn.target);
     if (!source || !target) return;
-    // Valid flows: image→image (参考), text→image (提示词), image→text (反推),
-    // image→video (首帧), text→video (提示词).
-    const ok =
-      (source.type === "image" && (target.type === "image" || target.type === "text" || target.type === "video")) ||
-      (source.type === "text" && (target.type === "image" || target.type === "video"));
-    if (!ok) {
+    if (!canConnectNodeKinds(source.type, target.type)) {
       get().showToast("这两种节点之间不支持连线", "error");
       return;
     }
@@ -502,6 +580,80 @@ export const useStudio = create<StudioState>((set, get) => ({
       });
       get().scheduleSave();
     }
+  },
+
+  copySelectedNodes: () => {
+    const { nodes, edges } = get();
+    const copiedIds = new Set(nodes.filter((node) => node.selected).map((node) => node.id));
+    if (!copiedIds.size) return 0;
+
+    // Selecting a group copies its full contents, including nested groups.
+    let addedChild = true;
+    while (addedChild) {
+      addedChild = false;
+      for (const node of nodes) {
+        if (node.parentId && copiedIds.has(node.parentId) && !copiedIds.has(node.id)) {
+          copiedIds.add(node.id);
+          addedChild = true;
+        }
+      }
+    }
+    const copiedNodes = nodes
+      .filter((node) => copiedIds.has(node.id))
+      .map((node) => node.parentId && !copiedIds.has(node.parentId)
+        ? ({ ...node, parentId: undefined, position: absoluteNodePosition(node, nodes) } as AppNode)
+        : node);
+    nodeClipboard = {
+      nodes: cloneSerializable(copiedNodes),
+      edges: cloneSerializable(edges.filter((edge) => copiedIds.has(edge.source) && copiedIds.has(edge.target))),
+      pasteCount: 0,
+    };
+    get().showToast(`已复制 ${copiedIds.size} 个节点`, "success");
+    return copiedIds.size;
+  },
+
+  pasteCopiedNodes: async () => {
+    const clipboard = nodeClipboard;
+    if (!clipboard?.nodes.length) return 0;
+    clipboard.pasteCount += 1;
+    const offset = 48 * clipboard.pasteCount;
+    const idMap = new Map(clipboard.nodes.map((node) => [node.id, uid()]));
+    const preparedData = await Promise.all(clipboard.nodes.map(prepareCopiedNodeData));
+    const pastedNodes = clipboard.nodes.map((node, index) => {
+      const copiedParentId = node.parentId ? idMap.get(node.parentId) : undefined;
+      const absolutePosition = absoluteNodePosition(node, clipboard.nodes);
+      return {
+        ...cloneSerializable(node),
+        id: idMap.get(node.id)!,
+        parentId: copiedParentId,
+        position: copiedParentId
+          ? { ...node.position }
+          : { x: absolutePosition.x + offset, y: absolutePosition.y + offset },
+        data: preparedData[index],
+        selected: !copiedParentId,
+        dragging: false,
+        measured: undefined,
+      } as AppNode;
+    });
+    const pastedEdges = clipboard.edges.flatMap((edge) => {
+      const source = idMap.get(edge.source);
+      const target = idMap.get(edge.target);
+      if (!source || !target) return [];
+      return [{
+        ...cloneSerializable(edge),
+        id: `e-${source}-${target}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        source,
+        target,
+        selected: false,
+      } satisfies Edge];
+    });
+    set((state) => ({
+      nodes: [...state.nodes.map((node) => ({ ...node, selected: false })), ...pastedNodes],
+      edges: [...state.edges.map((edge) => ({ ...edge, selected: false })), ...pastedEdges],
+    }));
+    get().scheduleSave();
+    get().showToast(`已粘贴 ${pastedNodes.length} 个节点`, "success");
+    return pastedNodes.length;
   },
 
   createGroup: (nodeIds) => {
@@ -924,10 +1076,79 @@ export const useStudio = create<StudioState>((set, get) => ({
     const data = node.data as VideoNodeData;
     if (data.isGeneratedResult) return;
 
-    // 视频节点的提示词与多模态素材都由自身对话框管理；暂不读取上游连线。
-    const prompt = data.prompt.trim();
-    const shotsEnabled = data.shotsEnabled === true;
-    const shots: ShotSegment[] = Array.isArray(data.shots) ? data.shots : [];
+    // 画布连线直接参与生成：文本作为公共提示词，图片作为视觉参考。
+    const upstreamEdges = state.edges.filter((edge) => edge.target === nodeId && edge.data?.generation !== true);
+    const upstreamTextParts: string[] = [];
+    const upstreamImageAssets: VideoReferenceAsset[] = [];
+    const upstreamVideoAssets: VideoReferenceAsset[] = [];
+    const seenUpstreamImages = new Set<string>();
+    for (const edge of upstreamEdges) {
+      const source = state.nodes.find((candidate) => candidate.id === edge.source);
+      if (source?.type === "text") {
+        const text = (source.data as TextNodeData).text.trim();
+        if (text) upstreamTextParts.push(text);
+      } else if (source?.type === "image") {
+        const image = source.data as ImageNodeData;
+        const src = image.urls?.[image.activeIndex ?? 0] ?? image.url;
+        if (!src || seenUpstreamImages.has(src)) continue;
+        seenUpstreamImages.add(src);
+        upstreamImageAssets.push({
+          id: `canvas-image-${source.id}`,
+          kind: "image",
+          name: `${image.label || "画布参考图"}.png`,
+          url: src,
+        });
+      } else if (source?.type === "video") {
+        const video = source.data as VideoNodeData;
+        if (video.sourceVideo) {
+          upstreamVideoAssets.push({
+            ...video.sourceVideo,
+            trimStart: video.clipStart ?? video.sourceVideo.trimStart,
+            trimEnd: video.clipEnd ?? video.sourceVideo.trimEnd,
+            id: `canvas-video-${source.id}`,
+            name: video.sourceVideo.name || `${video.label || "画布参考视频"}.mp4`,
+          });
+        } else {
+          const src = video.url ?? video.remoteUrl;
+          if (src) {
+            upstreamVideoAssets.push({
+              id: `canvas-video-${source.id}`,
+              kind: "video",
+              name: `${video.label || "画布参考视频"}.mp4`,
+              url: src,
+              mimeType: "video/mp4",
+              trimStart: video.clipStart,
+              trimEnd: video.clipEnd,
+            });
+          }
+        }
+      }
+    }
+    const prompt = [...upstreamTextParts, data.prompt.trim()].filter(Boolean).join("\n");
+    const ownReferenceAssets = Array.isArray(data.referenceAssets) ? data.referenceAssets.filter(Boolean) : [];
+    const sourceReferenceAssets = data.model === "v3-omni" && data.sourceVideo ? [data.sourceVideo] : [];
+    const referenceAssets = [
+      ...sourceReferenceAssets,
+      ...ownReferenceAssets.filter((asset) => !sourceReferenceAssets.some((source) => source.id === asset.id)),
+      ...upstreamImageAssets,
+      ...upstreamVideoAssets,
+    ];
+    const referenceImages = referenceAssets.filter((asset) => asset.kind === "image");
+    const referenceVideos = referenceAssets.filter((asset) => asset.kind === "video");
+    const referenceAudios = referenceAssets.filter((asset) => asset.kind === "audio");
+    const configuredShotMode = data.shotsEnabled || data.shotMode === "custom"
+      ? "custom"
+      : data.model === "v3-omni" && data.shotModeExplicit !== true
+        ? "auto"
+        : data.shotMode ?? "single";
+    const shotMode = data.model === "v3-omni" && referenceVideos.length
+      ? data.referType === "base" ? "single" : configuredShotMode === "single" ? "auto" : configuredShotMode
+      : configuredShotMode;
+    const shotsEnabled = shotMode === "custom";
+    const ownShots: ShotSegment[] = Array.isArray(data.shots) ? data.shots : [];
+    const shots: ShotSegment[] = shotsEnabled && upstreamTextParts.length
+      ? ownShots.map((shot) => ({ ...shot, prompt: [...upstreamTextParts, shot.prompt.trim()].filter(Boolean).join("\n") }))
+      : ownShots;
     if (!shotsEnabled && !prompt) {
       get().showToast("请先输入视频提示词", "error");
       return;
@@ -956,10 +1177,6 @@ export const useStudio = create<StudioState>((set, get) => ({
         return;
       }
     }
-    const referenceAssets = Array.isArray(data.referenceAssets) ? data.referenceAssets.filter(Boolean) : [];
-    const referenceImages = referenceAssets.filter((asset) => asset.kind === "image");
-    const referenceVideos = referenceAssets.filter((asset) => asset.kind === "video");
-    const referenceAudios = referenceAssets.filter((asset) => asset.kind === "audio");
     const inputMode = data.inputMode === "keyframes" ? "keyframes" : "references";
     const keyframeAssets = Array.isArray(data.keyframeAssets)
       ? data.keyframeAssets.filter((asset) => asset && asset.kind === "image")
@@ -1069,6 +1286,8 @@ export const useStudio = create<StudioState>((set, get) => ({
       seedText: data.seedText,
       referType: data.referType,
       keepOriginalSound: data.keepOriginalSound,
+      shotMode,
+      shotModeExplicit: data.shotModeExplicit,
       shotsEnabled,
       shots: shotsEnabled ? shots : [],
       inputMode,
@@ -1102,14 +1321,32 @@ export const useStudio = create<StudioState>((set, get) => ({
         const [resolvedReferences, resolvedKeyframes] = data.model === "v3-omni"
           ? await Promise.all([resolveAssets(referenceAssets), resolveAssets(keyframeAssets)])
           : inputMode === "keyframes"
-            ? [referenceAssets, await resolveAssets(keyframeAssets)]
+            ? await Promise.all([resolveAssets(upstreamImageAssets), resolveAssets(keyframeAssets)])
             : [await resolveAssets(referenceAssets), keyframeAssets];
         if (!videoResultIsRunning(resultNodeId, get)) return;
-        get().updateNode(nodeId, { referenceAssets: resolvedReferences, keyframeAssets: resolvedKeyframes });
-        const imageRefs = resolvedReferences.filter((asset) => asset.kind === "image").map((asset) => asset.url);
+        const resolvedSource = data.sourceVideo
+          ? resolvedReferences.find((asset) => asset.id === data.sourceVideo?.id)
+          : undefined;
+        const resolvedOwnReferences = resolvedReferences.filter((asset) => ownReferenceAssets.some((own) => own.id === asset.id));
+        get().updateNode(nodeId, {
+          sourceVideo: resolvedSource ?? data.sourceVideo,
+          referenceAssets: data.model === "v3-omni" || inputMode === "references" ? resolvedOwnReferences : ownReferenceAssets,
+          keyframeAssets: resolvedKeyframes,
+        });
+        const resolvedUpstreamImages = resolvedReferences.filter((asset) => upstreamImageAssets.some((upstream) => upstream.id === asset.id));
+        const ownImageRefs = resolvedReferences
+          .filter((asset) => asset.kind === "image" && !upstreamImageAssets.some((upstream) => upstream.id === asset.id))
+          .map((asset) => asset.url);
+        const connectedFirstFrame = resolvedUpstreamImages[0]?.url;
+        const useConnectedAsFirstFrame = Boolean(connectedFirstFrame)
+          && (data.model === "v3-omni" || needsFrame || inputMode === "keyframes")
+          && !resolvedKeyframes.some((asset) => asset.role === "first_frame");
+        const remainingConnectedRefs = resolvedUpstreamImages.slice(useConnectedAsFirstFrame ? 1 : 0).map((asset) => asset.url);
+        const imageRefs = [...ownImageRefs, ...remainingConnectedRefs];
         const videoRefs = resolvedReferences.filter((asset) => asset.kind === "video").map((asset) => asset.url);
         const audioRefs = resolvedReferences.filter((asset) => asset.kind === "audio").map((asset) => asset.url);
-        const firstFrameUrl = resolvedKeyframes.find((asset) => asset.role === "first_frame")?.url;
+        const firstFrameUrl = resolvedKeyframes.find((asset) => asset.role === "first_frame")?.url
+          ?? (useConnectedAsFirstFrame ? connectedFirstFrame : undefined);
         const lastFrameUrl = resolvedKeyframes.find((asset) => asset.role === "last_frame")?.url;
         const res = await fetch("/api/video/jobs", {
           method: "POST",
@@ -1128,8 +1365,9 @@ export const useStudio = create<StudioState>((set, get) => ({
             aspectRatio: data.aspectRatio,
             referType: data.referType ?? "feature",
             keepOriginalSound: data.keepOriginalSound === true,
+            shotMode,
             shots: shotsEnabled ? shots : [],
-            imageUrl: data.model === "v3-omni" || inputMode === "keyframes" ? firstFrameUrl : needsFrame ? imageRefs[0] : undefined,
+            imageUrl: data.model === "v3-omni" || inputMode === "keyframes" ? firstFrameUrl : needsFrame ? firstFrameUrl ?? imageRefs[0] : undefined,
             tailUrl: data.model === "v3-omni" || inputMode === "keyframes" ? lastFrameUrl : undefined,
             refUrls: data.model === "v3-omni" || (!needsFrame && inputMode !== "keyframes") ? imageRefs : undefined,
             videoUrls: data.model === "v3-omni" || (!needsFrame && inputMode !== "keyframes") ? videoRefs : undefined,

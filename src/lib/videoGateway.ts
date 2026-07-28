@@ -92,6 +92,7 @@ export function buildKlingOmniGenerationBody(params: VideoJobParams): Record<str
   }
 
   const shots = Array.isArray(params.shots) ? params.shots : [];
+  const shotMode = params.shotMode ?? (shots.length ? "custom" : "single");
   let promptText = (params.prompt ?? "").trim();
   if (shots.length) {
     if (shots.length > 6) throw new Error("可灵 Omni 最多支持 6 段分镜");
@@ -122,7 +123,7 @@ export function buildKlingOmniGenerationBody(params: VideoJobParams): Record<str
     throw new Error(`当前组合最多支持 ${hasVideo ? 4 : 7} 张图片`);
   }
   if (hasBaseVideo && (firstUrl || lastUrl)) throw new Error("基础视频编辑模式不支持首尾帧");
-  if (hasBaseVideo && shots.length) throw new Error("基础视频编辑模式不支持分镜");
+  if (hasBaseVideo && shotMode !== "single") throw new Error("基础视频编辑模式不支持多镜头");
 
   const audioMode = params.audioMode
     ?? (params.keepOriginalSound ? "original" : params.sound ? "native" : "off");
@@ -150,7 +151,7 @@ export function buildKlingOmniGenerationBody(params: VideoJobParams): Record<str
   }
 
   const settings: Record<string, unknown> = {
-    multi_shot: hasFeatureVideo ? true : hasBaseVideo ? false : shots.length > 0,
+    multi_shot: hasFeatureVideo ? true : hasBaseVideo ? false : shotMode !== "single",
     audio: audioMode,
     resolution: params.mode === "4K" ? "4k" : params.mode,
     duration: params.duration,

@@ -87,6 +87,7 @@ export async function POST(req: Request) {
     prompt: typeof shot?.prompt === "string" ? shot.prompt.trim() : "",
     duration: Number(shot?.duration),
   }));
+  const shotMode = p.shotMode === "auto" || p.shotMode === "custom" ? p.shotMode : "single";
 
   if (!imageUrl && model !== "v3-omni" && !isSeedanceModel(model)) {
     return NextResponse.json({ error: "缺少起始帧图片" }, { status: 400 });
@@ -183,6 +184,7 @@ export async function POST(req: Request) {
         audioUrls,
         referType,
         keepOriginalSound,
+        shotMode,
         shots,
       });
     } catch (error) {

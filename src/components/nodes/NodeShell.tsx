@@ -4,8 +4,8 @@
 // as the drag handle; double-click to rename), the card frame, left/right ⊕
 // ports (libTV-style), hover actions, and a free-resize grip (width + height).
 
-import { Handle, Position, useReactFlow } from "@xyflow/react";
-import { useRef, useState, type ReactNode } from "react";
+import { Handle, Position, useReactFlow, useUpdateNodeInternals } from "@xyflow/react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { Icon } from "../icons";
 import { useStudio } from "@/lib/store";
@@ -21,7 +21,8 @@ export function NodeShell({
   running,
   className,
   toolbar,
-  showHeaderActions = true,
+  headerMeta,
+  showHeaderActions = false,
   showDuplicateAction = true,
   frameless = false,
   portTop,
@@ -40,6 +41,8 @@ export function NodeShell({
   className?: string;
   /** 浮在节点上方的工具条（如文本节点的格式栏），随节点移动。 */
   toolbar?: ReactNode;
+  /** 标题右侧的媒体信息，如 1920 × 1080 · 30 fps。 */
+  headerMeta?: ReactNode;
   /** 是否显示标题栏右侧的复制、删除按钮。 */
   showHeaderActions?: boolean;
   /** 某些过程节点只允许删除，不应复制任务状态。 */
@@ -58,8 +61,55 @@ export function NodeShell({
   const openMenu = useStudio((s) => s.openMenu);
   const updateNode = useStudio((s) => s.updateNode);
   const rf = useReactFlow();
+  const updateNodeInternals = useUpdateNodeInternals();
   const wrapRef = useRef<HTMLDivElement>(null);
+  const portFrameRef = useRef<number | null>(null);
   const [editing, setEditing] = useState(false);
+
+  useEffect(() => () => {
+    if (portFrameRef.current !== null) cancelAnimationFrame(portFrameRef.current);
+  }, []);
+
+  const syncPortGeometry = () => {
+    if (portFrameRef.current !== null) return;
+    portFrameRef.current = requestAnimationFrame(() => {
+      portFrameRef.current = null;
+      updateNodeInternals(id);
+    });
+  };
+
+  const followPointerWithPorts = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === "touch") return;
+    const wrap = wrapRef.current;
+    const body = wrap?.querySelector<HTMLElement>("[data-body]");
+    if (!wrap || !body) return;
+    const zoom = rf.getZoom() || 1;
+    const wrapRect = wrap.getBoundingClientRect();
+    const bodyRect = body.getBoundingClientRect();
+    const bodyTop = (bodyRect.top - wrapRect.top) / zoom;
+    const bodyHeight = bodyRect.height / zoom;
+    const anchor = typeof portTop === "number" ? portTop : bodyTop + bodyHeight / 2;
+    const followRange = Math.min(76, Math.max(36, bodyHeight * 0.25));
+    const pointerTop = (e.clientY - wrapRect.top) / zoom;
+    const nextTop = Math.max(
+      bodyTop + 18,
+      Math.min(bodyTop + bodyHeight - 18, Math.max(anchor - followRange, Math.min(anchor + followRange, pointerTop))),
+    );
+    const normalizedY = Math.min(1, Math.abs(nextTop - anchor) / followRange);
+    // A half ellipse: the handle may travel farther outward near its centre,
+    // while gently returning toward the card at the top and bottom edges.
+    const arcFactor = Math.sqrt(Math.max(0, 1 - normalizedY * normalizedY));
+    const minOut = 26;
+    const maxOut = minOut + 30 * arcFactor;
+    const leftDistance = (bodyRect.left - e.clientX) / zoom;
+    const rightDistance = (e.clientX - bodyRect.right) / zoom;
+    const leftOut = Math.max(minOut, Math.min(maxOut, leftDistance));
+    const rightOut = Math.max(minOut, Math.min(maxOut, rightDistance));
+    wrap.style.setProperty("--tf-port-top", `${Math.round(nextTop)}px`);
+    wrap.style.setProperty("--tf-port-left", `${Math.round(-leftOut)}px`);
+    wrap.style.setProperty("--tf-port-right", `${Math.round(-rightOut)}px`);
+    syncPortGeometry();
+  };
 
   const openPortMenu = (side: "in" | "out") => (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -121,7 +171,17 @@ export function NodeShell({
   };
 
   return (
-    <div ref={wrapRef} className={cn("tf-node-wrap group/node relative", selected && "selected")} style={{ width }}>
+    <div
+      ref={wrapRef}
+      className={cn("tf-node-wrap group/node relative", selected && "selected")}
+      style={{
+        width,
+        "--tf-port-top": typeof portTop === "number" ? `${portTop}px` : portTop ?? "50%",
+        "--tf-port-left": "-30px",
+        "--tf-port-right": "-30px",
+      } as CSSProperties}
+      onPointerMove={followPointerWithPorts}
+    >
       {/* 浮动工具条 — 节点上方居中，内联跟随节点（不拦截画布拖动） */}
       {toolbar ? (
         <div className="nodrag absolute -top-[68px] left-1/2 z-30 -translate-x-1/2" onMouseDown={(e) => e.stopPropagation()}>
@@ -153,6 +213,11 @@ export function NodeShell({
             {label}
           </span>
         )}
+        {headerMeta ? (
+          <span className="nodrag shrink-0 rounded-full border border-white/[0.08] bg-white/[0.035] px-2 py-0.5 text-[9px] tabular-nums text-fg-mute">
+            {headerMeta}
+          </span>
+        ) : null}
         {showHeaderActions ? (
           <span className="nodrag flex items-center gap-0.5 opacity-0 transition-opacity group-hover/node:opacity-100">
             {showDuplicateAction ? (
@@ -197,11 +262,14 @@ export function NodeShell({
         {children}
       </div>
 
+      {/* Transparent fan-shaped tolerance zones keep the moving ports reachable. */}
+      <div className="tf-port-follow-zone tf-port-follow-zone--left" aria-hidden="true" />
+      <div className="tf-port-follow-zone tf-port-follow-zone--right" aria-hidden="true" />
       {/* Ports — ⊕ on both flanks, revealed on hover (libTV interaction) */}
-      <Handle type="target" position={Position.Left} className="tf-port" style={{ left: -30, top: portTop }} onClick={openPortMenu("in")}>
+      <Handle type="target" position={Position.Left} className="tf-port" style={{ left: "var(--tf-port-left)", top: "var(--tf-port-top)" }} onClick={openPortMenu("in")}>
         <Icon name="Plus" size={12} className="pointer-events-none" />
       </Handle>
-      <Handle type="source" position={Position.Right} className="tf-port" style={{ right: -30, top: portTop }} onClick={openPortMenu("out")}>
+      <Handle type="source" position={Position.Right} className="tf-port" style={{ right: "var(--tf-port-right)", top: "var(--tf-port-top)" }} onClick={openPortMenu("out")}>
         <Icon name="Plus" size={12} className="pointer-events-none" />
       </Handle>
 

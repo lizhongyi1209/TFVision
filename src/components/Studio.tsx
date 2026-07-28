@@ -31,8 +31,16 @@ import { AgentPanel } from "./AgentPanel";
 import { Icon } from "./icons";
 import { fileToDataURL } from "@/lib/utils";
 import { rememberVideoReferenceBlob } from "@/lib/videoReferenceStorage";
+import { inspectVideoFile } from "@/lib/mediaMetadata";
+import type { VideoNodeData } from "@/lib/types";
 
 const NODE_TYPES = { text: TextNode, image: ImageNode, video: VideoNode, group: GroupNode };
+
+const isImageFile = (file: File) =>
+  file.type.startsWith("image/") || /\.(?:png|jpe?g|webp|gif|avif)$/i.test(file.name);
+
+const isVideoFile = (file: File) =>
+  file.type.startsWith("video/") || /\.(?:mp4|mov|m4v|webm)$/i.test(file.name);
 
 function GroupSelectionToolbar() {
   const nodes = useStudio((state) => state.nodes);
@@ -79,6 +87,8 @@ function Canvas() {
   const closeMenu = useStudio((s) => s.closeMenu);
   const removeEdge = useStudio((s) => s.removeEdge);
   const addNode = useStudio((s) => s.addNode);
+  const copySelectedNodes = useStudio((s) => s.copySelectedNodes);
+  const pasteCopiedNodes = useStudio((s) => s.pasteCopiedNodes);
   const loadWorkspace = useStudio((s) => s.loadWorkspace);
   const fetchSettings = useStudio((s) => s.fetchSettings);
   const saveWorkspaceNow = useStudio((s) => s.saveWorkspaceNow);
@@ -91,18 +101,31 @@ function Canvas() {
     void loadWorkspace();
   }, [fetchSettings, loadWorkspace]);
 
-  // V = 移动工具，H = 抓手（对齐 libTV）。输入框聚焦时不抢按键。
+  // V = 移动工具，H = 抓手；Ctrl/Cmd+C、Ctrl/Cmd+V 复制粘贴节点。
+  // 输入框聚焦时保留原生文本编辑快捷键。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
       const el = e.target as HTMLElement;
       if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) return;
+      const key = e.key.toLowerCase();
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && key === "c") {
+        if (!useStudio.getState().nodes.some((node) => node.selected)) return;
+        e.preventDefault();
+        copySelectedNodes();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && key === "v") {
+        e.preventDefault();
+        void pasteCopiedNodes();
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "v" || e.key === "V") setTool("move");
       if (e.key === "h" || e.key === "H") setTool("hand");
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setTool]);
+  }, [copySelectedNodes, pasteCopiedNodes, setTool]);
 
   // Flush pending save when leaving.
   useEffect(() => {
@@ -139,13 +162,15 @@ function Canvas() {
   // Drops over an existing video node remain multimodal reference inputs.
   const onDrop = useCallback(
     (e: React.DragEvent) => {
-      const file = e.dataTransfer?.files?.[0];
-      if (!file || (!file.type.startsWith("image/") && !file.type.startsWith("video/"))) return;
+      const file = Array.from(e.dataTransfer?.files ?? []).find((candidate) => isImageFile(candidate) || isVideoFile(candidate));
+      if (!file) return;
       const target = e.target as HTMLElement;
-      if (!target.classList.contains("react-flow__pane")) return; // node-level drops handled by the node
+      // Node-level drops remain multimodal reference inputs. Any other point
+      // inside React Flow is treated as empty canvas (pane/background/viewport).
+      if (target.closest(".react-flow__node") || !target.closest(".react-flow")) return;
       e.preventDefault();
       const flowPosition = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
-      if (file.type.startsWith("image/")) {
+      if (isImageFile(file)) {
         void fileToDataURL(file).then((url) => {
           addNode("image", flowPosition, { url, urls: [url] });
         });
@@ -153,17 +178,47 @@ function Canvas() {
       }
       const assetId = `canvas-video-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       const localUrl = URL.createObjectURL(file);
-      void rememberVideoReferenceBlob(assetId, file);
-      addNode("video", flowPosition, {
+      void rememberVideoReferenceBlob(assetId, file).catch(() => {
+        useStudio.getState().showToast(`${file.name} 本地保存失败，刷新页面后需要重新拖入`, "error");
+      });
+      const nodeId = addNode("video", flowPosition, {
         label: file.name.replace(/\.[^.]+$/, "") || "导入视频",
+        model: "v3-omni",
+        aspectRatio: "智能",
+        inputMode: "references",
+        referType: "feature",
+        shotMode: "auto",
+        shotsEnabled: false,
+        audioMode: "off",
+        sound: false,
+        keepOriginalSound: false,
         sourceVideo: {
           id: assetId,
           kind: "video",
           name: file.name,
           localKey: assetId,
           localUrl,
+          mimeType: file.type,
+          sizeBytes: file.size,
         },
       });
+      void inspectVideoFile(file).then((metadata) => {
+        const current = useStudio.getState().nodes.find((node) => node.id === nodeId)?.data as VideoNodeData | undefined;
+        if (!current) return;
+        useStudio.getState().updateNode(nodeId, {
+          mediaWidth: metadata.width,
+          mediaHeight: metadata.height,
+          mediaFrameRate: metadata.frameRate,
+          sourceVideo: {
+            ...current.sourceVideo,
+            width: metadata.width,
+            height: metadata.height,
+            duration: metadata.duration,
+            frameRate: metadata.frameRate,
+          },
+        });
+      }).catch(() => undefined);
+      useStudio.getState().showToast(`已导入并作为 Omni 参考视频：${file.name}`, "success");
     },
     [rf, addNode],
   );

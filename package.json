@@ -9,6 +9,9 @@
     "test:unit": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --experimental-strip-types src/lib/__tests__/*.test.ts"
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffmpeg-installer/win32-x64": "^4.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2",
     "@phosphor-icons/react": "^2.1.7",
     "@xyflow/react": "^12.3.6",
     "clsx": "^2.1.1",

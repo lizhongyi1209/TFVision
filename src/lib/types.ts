@@ -66,6 +66,7 @@ export type VideoResolution = "480p" | "720p" | "1080p" | "4K";
 export type VideoAspectRatio = "智能" | "16:9" | "4:3" | "1:1" | "3:4" | "9:16" | "21:9";
 export type VideoReferType = "feature" | "base";
 export type VideoAudioMode = "native" | "original" | "off";
+export type VideoShotMode = "single" | "auto" | "custom";
 
 export interface VideoBillingEntry {
   charge_type?: string;
@@ -105,6 +106,8 @@ export interface VideoJobParams {
   keepOriginalSound?: boolean;
   /** 可灵多分镜；Seedance 2.0 不支持。 */
   shots?: ShotSegment[];
+  /** 可灵 Omni：单镜头、AI 自动多镜头或自定义分镜。 */
+  shotMode?: VideoShotMode;
 }
 
 export interface AgentVideoPlan {
@@ -233,6 +236,13 @@ export type ImageNodeData = {
   count: number;
   width?: number;
   height?: number;
+  mediaWidth?: number;
+  mediaHeight?: number;
+  /** 已成功写入并回读验证亚马逊 AI 人物 XMP 标签的图片索引。 */
+  amazonAiDisclosure?: {
+    taggedIndices: number[];
+    updatedAt: number;
+  };
   [key: string]: unknown;
 };
 
@@ -259,6 +269,9 @@ export type VideoReferenceAsset = {
   height?: number;
   duration?: number;
   frameRate?: number;
+  /** Non-destructive source range selected in the canvas video cropper. */
+  trimStart?: number;
+  trimEnd?: number;
 };
 
 export type VideoNodeData = {
@@ -283,6 +296,10 @@ export type VideoNodeData = {
   seedText: string;
   referType: VideoReferType;
   keepOriginalSound: boolean;
+  shotMode?: VideoShotMode;
+  /** 区分用户主动选择的单镜头与旧版本的默认单镜头。 */
+  shotModeExplicit?: boolean;
+  /** 兼容旧画布数据；等价于 shotMode === "custom"。 */
   shotsEnabled: boolean;
   shots: ShotSegment[];
   inputMode?: VideoInputMode;
@@ -300,6 +317,11 @@ export type VideoNodeData = {
   billing?: VideoBillingEntry[];
   width?: number;
   height?: number;
+  mediaWidth?: number;
+  mediaHeight?: number;
+  mediaFrameRate?: number;
+  clipStart?: number;
+  clipEnd?: number;
   [key: string]: unknown;
 };
 

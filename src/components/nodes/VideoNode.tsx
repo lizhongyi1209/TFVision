@@ -8,6 +8,7 @@ import { useKeyPress, useReactFlow, type NodeProps } from "@xyflow/react";
 import type { AppNode } from "@/lib/store";
 import { useStudio } from "@/lib/store";
 import type {
+  ImageNodeData,
   VideoAspectRatio,
   VideoAudioMode,
   VideoFrameRole,
@@ -17,19 +18,22 @@ import type {
   VideoReferenceAsset,
   VideoReferenceKind,
   VideoResolution,
+  VideoShotMode,
   ShotSegment,
 } from "@/lib/types";
 import { VIDEO_MODELS, VIDEO_MODEL_RESOLUTIONS, videoDurationsFor } from "@/lib/models";
 import { allowedVideoAspectRatios, isSeedanceModel, supportsShots } from "@/lib/videoGateway";
-import { cn, downloadUrl } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import {
   forgetVideoReferenceBlob,
   readVideoReferenceBlob,
   rememberVideoReferenceBlob,
 } from "@/lib/videoReferenceStorage";
+import { inspectVideoFile } from "@/lib/mediaMetadata";
 import { Icon } from "../icons";
 import { NodeShell, RunningVeil } from "./NodeShell";
 import { Chip, Spinner } from "../ui";
+import { ImeSafeTextarea } from "../ImeSafeTextarea";
 
 const VIDEO_REFERENCE_ACCEPT = "image/png,image/jpeg,image/webp,video/mp4,video/quicktime,audio/wav,audio/mpeg";
 const VIDEO_KEYFRAME_ACCEPT = "image/png,image/jpeg,image/webp";
@@ -81,16 +85,17 @@ async function inspectReferenceFile(
   file: File,
   kind: VideoReferenceKind,
   model: VideoModel,
-): Promise<Pick<VideoReferenceAsset, "mimeType" | "sizeBytes" | "width" | "height" | "duration">> {
+): Promise<Pick<VideoReferenceAsset, "mimeType" | "sizeBytes" | "width" | "height" | "duration" | "frameRate">> {
   const base = { mimeType: file.type, sizeBytes: file.size };
-  if (model !== "v3-omni") return base;
+  const videoMetadata = kind === "video" ? await inspectVideoFile(file) : null;
+  if (model !== "v3-omni") return { ...base, ...(videoMetadata ?? {}) };
   if (kind === "audio") throw new Error("可灵 Omni 不支持参考音频");
   if (kind === "image" && !/^(?:image\/jpeg|image\/png)$/i.test(file.type) && !/\.(?:jpe?g|png)$/i.test(file.name)) {
     throw new Error("可灵 Omni 图片仅支持 JPG、JPEG 或 PNG");
   }
   if (kind === "image" && file.size > 50 * 1024 * 1024) throw new Error("可灵 Omni 图片不能超过 50MB");
   if (kind === "video" && file.size > 200 * 1024 * 1024) throw new Error("可灵 Omni 视频不能超过 200MB");
-  const metadata = await readVisualMetadata(file, kind);
+  const metadata = videoMetadata ?? await readVisualMetadata(file, kind);
   const width = metadata.width ?? 0;
   const height = metadata.height ?? 0;
   const ratio = height ? width / height : 0;
@@ -248,23 +253,24 @@ function ShotEditor({ data, nodeId }: { data: VideoNodeData; nodeId: string }) {
       {shots.map((shot, index) => (
         <div key={index} className="flex items-start gap-2">
           <span className="mt-2 w-4 shrink-0 text-right text-[10px] text-fg-mute">{index + 1}</span>
-          <textarea
+          <ImeSafeTextarea
             value={shot.prompt}
-            onChange={(event) => updateShot(index, { prompt: event.target.value })}
+            onValueChange={(nextValue) => updateShot(index, { prompt: nextValue })}
             placeholder={`第 ${index + 1} 段提示词`}
             rows={2}
             className="nowheel min-h-[52px] flex-1 resize-y rounded-[9px] border border-line bg-panel-2/70 p-2 text-[11px] leading-relaxed text-fg outline-none placeholder:text-fg-mute focus:border-line-2"
           />
-          <label className="flex w-12 shrink-0 flex-col items-center gap-1 text-[8px] text-fg-mute">
+          <label className="relative w-20 shrink-0">
             <input
               type="number"
               min={1}
               max={data.duration}
               value={shot.duration}
               onChange={(event) => updateShot(index, { duration: Math.max(1, Number(event.target.value) || 1) })}
-              className="h-7 w-full rounded-[8px] border border-line bg-panel-2/70 px-1 text-center text-[10px] text-fg outline-none focus:border-line-2"
+              aria-label={`第 ${index + 1} 段时长（秒）`}
+              className="h-9 w-full appearance-none rounded-[9px] border border-line bg-panel-2/70 pl-3 pr-7 text-left text-[12px] tabular-nums text-fg outline-none focus:border-line-2 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
             />
-            秒
+            <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] text-fg-mute">秒</span>
           </label>
           {shots.length > 1 ? (
             <button type="button" title="删除分镜" onClick={() => removeShot(index)} className="mt-1.5 text-fg-mute hover:text-danger">
@@ -291,7 +297,17 @@ function ShotEditor({ data, nodeId }: { data: VideoNodeData; nodeId: string }) {
   );
 }
 
-function VideoParamPopover({ data, nodeId, onClose }: { data: VideoNodeData; nodeId: string; onClose: () => void }) {
+function VideoParamPopover({
+  data,
+  nodeId,
+  onClose,
+  hasConnectedVideo = false,
+}: {
+  data: VideoNodeData;
+  nodeId: string;
+  onClose: () => void;
+  hasConnectedVideo?: boolean;
+}) {
   const updateNode = useStudio((s) => s.updateNode);
   const set = (patch: Partial<VideoNodeData>) => updateNode(nodeId, patch);
   const durations = videoDurationsFor(data.model);
@@ -299,27 +315,33 @@ function VideoParamPopover({ data, nodeId, onClose }: { data: VideoNodeData; nod
   const ratios = allowedVideoAspectRatios(data.model);
   const seedance = isSeedanceModel(data.model);
   const omni = data.model === "v3-omni";
-  const hasOmniVideo = Array.isArray(data.referenceAssets) && data.referenceAssets.some((asset) => asset.kind === "video");
+  const hasOmniVideo = hasConnectedVideo || Boolean(data.sourceVideo)
+    || (Array.isArray(data.referenceAssets) && data.referenceAssets.some((asset) => asset.kind === "video"));
   const selectedAudioMode: VideoAudioMode = data.audioMode ?? (data.keepOriginalSound ? "original" : data.sound ? "native" : "off");
-  const audioModes: Array<{ value: VideoAudioMode; label: string }> = !hasOmniVideo
-    ? [{ value: "off", label: "关闭音频" }, { value: "native", label: "生成原生音频" }]
+  const audioModes: Array<{ value: VideoAudioMode; label: string; disabled: boolean; reason?: string }> = [
+    { value: "native", label: "生成声音", disabled: hasOmniVideo, reason: hasOmniVideo ? "包含参考视频时不能生成声音" : undefined },
+    { value: "original", label: "保留原声", disabled: !hasOmniVideo || data.referType !== "base", reason: !hasOmniVideo || data.referType !== "base" ? "仅视频编辑模式可保留原声" : undefined },
+    { value: "off", label: "关闭声音", disabled: false },
+  ];
+  const audioModeHint = !hasOmniVideo
+    ? "添加参考视频并选择“视频编辑”，即可保留原声"
     : data.referType === "base"
-      ? [{ value: "off", label: "关闭音频" }, { value: "original", label: "保留原声" }]
-      : [{ value: "off", label: "关闭音频" }];
+      ? "生成时保留参考视频中的原声"
+      : "视频参考模式只能关闭声音；切换到视频编辑后可保留原声";
+  const configuredShotMode: VideoShotMode = data.shotsEnabled || data.shotMode === "custom"
+    ? "custom"
+    : data.shotModeExplicit !== true ? "auto" : data.shotMode ?? "single";
+  const effectiveShotMode: VideoShotMode = omni && hasOmniVideo
+    ? data.referType === "base" ? "single" : configuredShotMode === "single" ? "auto" : configuredShotMode
+    : configuredShotMode;
 
   return (
     <div className="glass tf-node-popover popover-enter absolute bottom-full left-0 z-[80] mb-2 w-[340px] origin-bottom-left rounded-panel p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <div>
-          <div className="text-[11px] font-medium text-fg">视频参数</div>
-          <div className="mt-0.5 text-[9px] text-fg-mute">根据当前模型显示可用选项</div>
-        </div>
-        <button type="button" title="关闭参数" onClick={onClose} className="rounded p-1 text-fg-mute hover:bg-white/[0.06] hover:text-fg">
-          <Icon name="X" size={12} />
-        </button>
-      </div>
+      <button type="button" title="关闭参数" onClick={onClose} className="absolute right-3 top-3 rounded p-1 text-fg-mute hover:bg-white/[0.06] hover:text-fg">
+        <Icon name="X" size={12} />
+      </button>
 
-      <div className="mb-1.5 text-[10px] font-medium tracking-wide text-fg-mute">分辨率</div>
+      <div className="mb-1.5 pr-7 text-[10px] font-medium tracking-wide text-fg-mute">分辨率</div>
       <div className="mb-3 flex gap-1.5">
         {resolutions.map((resolution) => (
           <Chip key={resolution} active={data.mode === resolution} onClick={() => set({ mode: resolution as VideoResolution })}>
@@ -339,9 +361,7 @@ function VideoParamPopover({ data, nodeId, onClose }: { data: VideoNodeData; nod
 
       {ratios.length ? (
         <>
-          <div className="mb-1.5 text-[10px] font-medium tracking-wide text-fg-mute">
-            画面比例 <span className="font-normal text-fg-mute/65">· {seedance ? "Seedance" : "可灵 Omni"} 专属范围</span>
-          </div>
+          <div className="mb-1.5 text-[10px] font-medium tracking-wide text-fg-mute">画面比例</div>
           <div className="mb-3 grid grid-cols-3 gap-1.5">
             {ratios.map((ratio) => (
               <button
@@ -362,26 +382,102 @@ function VideoParamPopover({ data, nodeId, onClose }: { data: VideoNodeData; nod
         </>
       ) : null}
 
-      <div className="flex flex-wrap gap-1.5 border-t border-line pt-3">
-        {omni ? audioModes.map((mode) => (
-          <Chip
-            key={mode.value}
-            active={selectedAudioMode === mode.value}
-            onClick={() => set({
-              audioMode: mode.value,
-              sound: mode.value === "native",
-              keepOriginalSound: mode.value === "original",
+      {omni && hasOmniVideo ? (
+        <div className="mb-3 border-t border-line pt-3">
+          <div className="mb-1.5 text-[10px] font-medium tracking-wide text-fg-mute">参考视频模式</div>
+          <div className="flex gap-1.5">
+            <Chip
+              active={(data.referType ?? "feature") === "feature"}
+              onClick={() => set({
+                referType: "feature",
+                audioMode: "off",
+                sound: false,
+                keepOriginalSound: false,
+                shotMode: configuredShotMode === "custom" ? "custom" : "auto",
+                shotsEnabled: configuredShotMode === "custom",
+              })}
+            >
+              视频参考
+            </Chip>
+            <Chip
+              active={data.referType === "base"}
+              onClick={() => set({
+                referType: "base",
+                audioMode: selectedAudioMode === "original" ? "original" : "off",
+                sound: false,
+                keepOriginalSound: selectedAudioMode === "original",
+                shotMode: "single",
+                shotsEnabled: false,
+              })}
+            >
+              视频编辑
+            </Chip>
+          </div>
+          <div className="mt-1.5 text-[9px] leading-relaxed text-fg-mute/75">
+            {data.referType === "base" ? "基于原视频增删改内容，可选择保留原声" : "参考内容、风格与运镜生成新镜头"}
+          </div>
+        </div>
+      ) : null}
+
+      {omni ? (
+        <div className={cn("mb-3", !hasOmniVideo && "border-t border-line pt-3")}>
+          <div className="mb-1.5 text-[10px] font-medium tracking-wide text-fg-mute">镜头模式</div>
+          <div className="flex flex-wrap gap-1.5">
+            {([
+              { value: "single", label: "单镜头" },
+              { value: "auto", label: "AI 自动多镜头" },
+              { value: "custom", label: "自定义分镜" },
+            ] as Array<{ value: VideoShotMode; label: string }>).map((mode) => {
+              const disabled = hasOmniVideo
+                && (data.referType === "base" ? mode.value !== "single" : mode.value === "single");
+              return (
+                <Chip
+                  key={mode.value}
+                  active={effectiveShotMode === mode.value}
+                  disabled={disabled}
+                  title={disabled ? data.referType === "base" ? "视频编辑仅支持单镜头" : "视频参考必须使用多镜头" : undefined}
+                  onClick={() => set({
+                    shotMode: mode.value,
+                    shotModeExplicit: true,
+                    shotsEnabled: mode.value === "custom",
+                    shots: Array.isArray(data.shots) && data.shots.length ? data.shots : defaultShots(data.duration),
+                  })}
+                >
+                  {mode.value === "custom" ? <Icon name="Scissors" size={10} /> : null} {mode.label}
+                </Chip>
+              );
             })}
-          >
-            <Icon name="MusicNotes" size={11} /> {mode.label}
-          </Chip>
-        )) : (
-          <Chip active={data.sound} onClick={() => set({ sound: !data.sound })}>
-            <Icon name="MusicNotes" size={11} /> 生成音效
-          </Chip>
-        )}
-        {seedance ? (
-          <>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="border-t border-line pt-3">
+        <div className="mb-1.5 text-[10px] font-medium tracking-wide text-fg-mute">声音</div>
+        <div className="flex flex-wrap gap-1.5">
+          {omni ? audioModes.map((mode) => (
+            <Chip
+              key={mode.value}
+              active={selectedAudioMode === mode.value}
+              disabled={mode.disabled}
+              title={mode.reason}
+              onClick={() => set({
+                audioMode: mode.value,
+                sound: mode.value === "native",
+                keepOriginalSound: mode.value === "original",
+              })}
+            >
+              <Icon name="MusicNotes" size={11} /> {mode.label}
+            </Chip>
+          )) : (
+            <Chip active={data.sound} onClick={() => set({ sound: !data.sound })}>
+              <Icon name="MusicNotes" size={11} /> 生成音效
+            </Chip>
+          )}
+        </div>
+        {omni ? <div className="mt-2 text-[9px] leading-relaxed text-fg-mute/80">{audioModeHint}</div> : null}
+      </div>
+      {seedance ? (
+        <div className="mt-3 flex flex-wrap gap-1.5 border-t border-line pt-3">
             <Chip active={data.webSearch === true} onClick={() => set({ webSearch: data.webSearch !== true })}>
               <Icon name="Globe" size={11} /> 联网搜索
             </Chip>
@@ -397,9 +493,8 @@ function VideoParamPopover({ data, nodeId, onClose }: { data: VideoNodeData; nod
               title="相同种子和参数可复现相近效果；留空则随机"
               className="h-7 w-[86px] rounded-full border border-line bg-panel-2/80 px-2.5 text-center text-[9px] text-fg outline-none placeholder:text-fg-mute focus:border-line-2"
             />
-          </>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -411,6 +506,7 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
   const addNode = useStudio((s) => s.addNode);
   const showToast = useStudio((s) => s.showToast);
   const nodes = useStudio((s) => s.nodes);
+  const edges = useStudio((s) => s.edges);
   const referenceFileRef = useRef<HTMLInputElement>(null);
   const primaryVideoRef = useRef<HTMLVideoElement>(null);
   const revivedLocalKeysRef = useRef(new Set<string>());
@@ -419,6 +515,11 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
   const [popover, setPopover] = useState<"none" | "params" | "model">("none");
   const [composerOpen, setComposerOpen] = useState(false);
   const [frameExtractorOpen, setFrameExtractorOpen] = useState(false);
+  const [trimOpen, setTrimOpen] = useState(false);
+  const [trimStart, setTrimStart] = useState(0);
+  const [trimEnd, setTrimEnd] = useState(0);
+  const [trimPreviewPlaying, setTrimPreviewPlaying] = useState(false);
+  const [promptEditing, setPromptEditing] = useState(false);
   const [fileDragActive, setFileDragActive] = useState(false);
   const [requestedFrameRole, setRequestedFrameRole] = useState<VideoFrameRole | null>(null);
   const [videoDuration, setVideoDuration] = useState(0);
@@ -431,35 +532,99 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
   const sourceVideo = d.sourceVideo;
   const isGeneratedResult = d.isGeneratedResult === true;
   const referenceAssets = Array.isArray(d.referenceAssets) ? d.referenceAssets : [];
+  const generationReferenceAssets = d.model === "v3-omni" && sourceVideo
+    ? [sourceVideo, ...referenceAssets.filter((asset) => asset.id !== sourceVideo.id)]
+    : referenceAssets;
   const keyframeAssets = Array.isArray(d.keyframeAssets) ? d.keyframeAssets : [];
   const inputMode: VideoInputMode = d.inputMode === "keyframes" ? "keyframes" : "references";
   const activeAssets = inputMode === "keyframes" ? keyframeAssets : referenceAssets;
-  const referenceCounts = countReferences(referenceAssets);
+  const upstreamNodes = edges
+    .filter((edge) => edge.target === id && edge.data?.generation !== true)
+    .map((edge) => nodes.find((node) => node.id === edge.source))
+    .filter(Boolean);
+  const hasUpstreamText = upstreamNodes.some((node) => node?.type === "text" && Boolean(String(node.data.text ?? "").trim()));
+  const connectedImageAssets = Array.from(new Map(upstreamNodes.flatMap((node) => {
+    if (node?.type !== "image") return [];
+    const image = node.data as ImageNodeData;
+    const url = image.urls?.[image.activeIndex ?? 0] ?? image.url;
+    if (!url) return [];
+    return [[url, {
+      id: `canvas-image-${node.id}`,
+      kind: "image" as const,
+      name: image.label || "连线参考图",
+      url,
+    } satisfies VideoReferenceAsset]];
+  })).values());
+  const upstreamImageCount = connectedImageAssets.length;
+  const upstreamVideoCount = upstreamNodes.reduce((count, node) => {
+    if (node?.type !== "video") return count;
+    const video = node.data as VideoNodeData;
+    return count + (video.sourceVideo || video.url || video.remoteUrl ? 1 : 0);
+  }, 0);
+  const storedReferenceCounts = countReferences(generationReferenceAssets);
+  const referenceCounts = {
+    ...storedReferenceCounts,
+    image: storedReferenceCounts.image + upstreamImageCount,
+    video: storedReferenceCounts.video + upstreamVideoCount,
+  };
   const firstFrame = keyframeAssets.find((asset) => asset.role === "first_frame");
   const lastFrame = keyframeAssets.find((asset) => asset.role === "last_frame");
+  const referenceSummary = inputMode === "keyframes"
+    ? `首尾帧 ${keyframeAssets.length}/2`
+    : referenceCounts.image + referenceCounts.video + referenceCounts.audio
+      ? [
+          referenceCounts.image ? `图 ${referenceCounts.image}` : "",
+          referenceCounts.video ? `视频 ${referenceCounts.video}` : "",
+          referenceCounts.audio ? `音频 ${referenceCounts.audio}` : "",
+        ].filter(Boolean).join(" / ")
+      : "0 个参考素材";
   const previewImage = inputMode === "keyframes"
     ? firstFrame?.localUrl ?? firstFrame?.url ?? null
     : (() => {
         const image = referenceAssets.find((asset) => asset.kind === "image");
-        return image?.localUrl ?? image?.url ?? null;
+        return image?.localUrl ?? image?.url ?? connectedImageAssets[0]?.url ?? null;
       })();
   const playbackUrl = d.url ?? sourceVideo?.localUrl ?? sourceVideo?.url ?? null;
+  const mediaWidth = sourceVideo?.width ?? d.mediaWidth;
+  const mediaHeight = sourceVideo?.height ?? d.mediaHeight;
+  const mediaFrameRate = sourceVideo?.frameRate ?? d.mediaFrameRate;
+  const appliedClipDuration = d.clipEnd != null
+    ? Math.max(0, d.clipEnd - (d.clipStart ?? 0))
+    : sourceVideo?.trimEnd != null
+      ? Math.max(0, sourceVideo.trimEnd - (sourceVideo.trimStart ?? 0))
+      : 0;
+  const mediaMeta = mediaWidth && mediaHeight
+    ? `${mediaWidth} × ${mediaHeight}${mediaFrameRate ? ` · ${Number(mediaFrameRate.toFixed(2))} fps` : ""}${appliedClipDuration ? ` · 片段 ${appliedClipDuration.toFixed(2)}s` : ""}`
+    : undefined;
   const billingSummary = Array.isArray(d.billing)
     ? d.billing.map((entry) => entry.amount ? `${entry.amount}${entry.charge_type === "unit" ? " 单位" : ""}` : "").filter(Boolean).join(" + ")
     : "";
-  const shotsEnabled = d.shotsEnabled === true && supportsShots(d.model);
+  const configuredShotMode: VideoShotMode = d.shotsEnabled || d.shotMode === "custom"
+    ? "custom"
+    : d.model === "v3-omni" && d.shotModeExplicit !== true
+      ? "auto"
+      : d.shotMode ?? "single";
+  const shotMode: VideoShotMode = d.model === "v3-omni" && referenceCounts.video > 0
+    ? d.referType === "base" ? "single" : configuredShotMode === "single" ? "auto" : configuredShotMode
+    : configuredShotMode;
+  const shotsEnabled = shotMode === "custom" && supportsShots(d.model);
   const shots = Array.isArray(d.shots) && d.shots.length ? d.shots : defaultShots(d.duration);
-  const hasPrompt = shotsEnabled ? shots.every((shot) => Boolean(shot.prompt.trim())) : Boolean(d.prompt.trim());
+  const hasPrompt = shotsEnabled ? shots.every((shot) => Boolean(shot.prompt.trim())) : Boolean(d.prompt.trim()) || hasUpstreamText;
   const running = d.status === "running";
   const needsFrame = d.model === "v3" || d.model === "v2-6";
   const modelInfo = VIDEO_MODELS.find((model) => model.value === d.model);
   const compatibilityError = inputMode === "keyframes"
     ? keyframeCompatibilityError(keyframeAssets)
-    : referenceCompatibilityError(d.model, referenceAssets);
+    : referenceCompatibilityError(d.model, generationReferenceAssets);
   const shotTotal = shots.reduce((sum, shot) => sum + shot.duration, 0);
   const omniAudioMode: VideoAudioMode = d.audioMode ?? (d.keepOriginalSound ? "original" : d.sound ? "native" : "off");
+  const shotModeSummary = shotMode === "custom" ? "自定义分镜" : shotMode === "auto" ? "自动多镜头" : "单镜头";
+  const audioModeSummary = d.model === "v3-omni"
+    ? omniAudioMode === "native" ? "生成声音" : omniAudioMode === "original" ? "保留原声" : "关闭声音"
+    : d.sound ? "生成音效" : "关闭声音";
+  const paramSummary = `${d.mode} · ${d.duration}s · ${d.aspectRatio} · ${shotModeSummary} · ${audioModeSummary}`;
   const omniImageLimit = referenceCounts.video ? 4 : 7;
-  const omniMetadataError = d.model === "v3-omni" ? omniAssetMetadataError([...keyframeAssets, ...referenceAssets]) : null;
+  const omniMetadataError = d.model === "v3-omni" ? omniAssetMetadataError([...keyframeAssets, ...generationReferenceAssets]) : null;
   const omniCompatibilityError = d.model !== "v3-omni"
     ? null
     : omniMetadataError
@@ -473,15 +638,15 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
           : lastFrame && !firstFrame
             ? "可灵 Omni 不支持仅尾帧，请先添加首帧"
             : referenceCounts.video > 0 && d.referType === "base" && keyframeAssets.length > 0
-              ? "视频编辑（base）模式不支持首尾帧"
+              ? "视频编辑模式不支持首尾帧"
               : referenceCounts.video > 0 && d.referType === "base" && shotsEnabled
-                ? "视频编辑（base）模式不支持分镜"
+                ? "视频编辑模式不支持分镜"
                 : referenceCounts.video > 0 && d.referType !== "base" && omniAudioMode !== "off"
-                  ? "视频参考（feature）模式必须关闭音频"
+                  ? "视频参考模式必须关闭声音"
                   : referenceCounts.video > 0 && d.referType === "base" && omniAudioMode === "native"
-                    ? "视频编辑（base）模式只能关闭音频或保留原声"
+                    ? "视频编辑模式只能关闭声音或保留原声"
                     : (!referenceCounts.video || d.referType !== "base") && omniAudioMode === "original"
-                      ? "只有视频编辑（base）模式可以保留原声"
+                      ? "只有视频编辑模式可以保留原声"
                       : !firstFrame && !referenceCounts.video && d.aspectRatio === "智能"
                         ? "没有首帧或参考视频时必须选择画面比例"
                         : null;
@@ -495,7 +660,7 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
           ? omniCompatibilityError
       : inputMode === "references" && isSeedanceModel(d.model) && referenceCounts.audio > 0 && !referenceCounts.image && !referenceCounts.video
         ? "参考音频不能单独使用，请同时添加图片或视频"
-        : hasPrompt && inputMode === "keyframes" && needsFrame && !firstFrame
+        : hasPrompt && inputMode === "keyframes" && needsFrame && !firstFrame && !upstreamImageCount
     ? "请添加首帧图片"
     : hasPrompt && inputMode === "references" && needsFrame && !referenceCounts.image
       ? "该旧模型需要至少一张参考图作为首帧"
@@ -597,6 +762,9 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
           const currentAssets = Array.isArray(current?.[assetField]) ? current[assetField] : [];
           updateNode(id, {
             [assetField]: currentAssets.map((asset) => asset.id === assetId ? { ...asset, previewUrl } : asset),
+            ...(current?.sourceVideo?.id === assetId
+              ? { sourceVideo: { ...current.sourceVideo, previewUrl } }
+              : {}),
           });
         });
       }
@@ -612,10 +780,27 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
     });
     const current = useStudio.getState().nodes.find((node) => node.id === id)?.data as VideoNodeData | undefined;
     const currentAssets = Array.isArray(current?.[assetField]) ? current[assetField] : [];
+    const editableVideo = inputMode === "references" && !playbackUrl && !sourceVideo
+      ? addedAssets.find((asset) => asset.kind === "video")
+      : undefined;
     updateNode(id, {
       [assetField]: [...currentAssets, ...addedAssets],
+      ...(editableVideo
+        ? {
+            sourceVideo: editableVideo,
+            mediaWidth: editableVideo.width,
+            mediaHeight: editableVideo.height,
+            mediaFrameRate: editableVideo.frameRate,
+          }
+        : {}),
       ...(d.model === "v3-omni" && addedAssets.some((asset) => asset.kind === "video")
-        ? { audioMode: "off", sound: false, keepOriginalSound: false }
+        ? {
+            audioMode: "off",
+            sound: false,
+            keepOriginalSound: false,
+            shotMode: d.referType === "base" ? "single" : configuredShotMode === "custom" ? "custom" : "auto",
+            shotsEnabled: configuredShotMode === "custom" && d.referType !== "base",
+          }
         : {}),
     });
     setRequestedFrameRole(null);
@@ -629,7 +814,20 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
     if (asset?.localUrl?.startsWith("blob:")) URL.revokeObjectURL(asset.localUrl);
     if (asset?.localKey) void forgetVideoReferenceBlob(asset.localKey);
     revivedLocalKeysRef.current.delete(asset?.localKey ?? assetId);
-    updateNode(id, { [assetField]: activeAssets.filter((asset) => asset.id !== assetId) });
+    const removesEditableVideo = sourceVideo?.id === assetId;
+    updateNode(id, {
+      [assetField]: activeAssets.filter((asset) => asset.id !== assetId),
+      ...(removesEditableVideo
+        ? {
+            sourceVideo: undefined,
+            mediaWidth: undefined,
+            mediaHeight: undefined,
+            mediaFrameRate: undefined,
+            clipStart: undefined,
+            clipEnd: undefined,
+          }
+        : {}),
+    });
   };
 
   useEffect(() => {
@@ -652,11 +850,15 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
       }
       const current = useStudio.getState().nodes.find((node) => node.id === id)?.data as VideoNodeData | undefined;
       const currentAssets = Array.isArray(current?.[assetField]) ? current[assetField] : [];
+      const sourceLocalUrl = current?.sourceVideo ? replacements.get(current.sourceVideo.id) : undefined;
       updateNode(id, {
         [assetField]: currentAssets.map((asset) => {
           const localUrl = replacements.get(asset.id);
           return localUrl ? { ...asset, localUrl } : asset;
         }),
+        ...(sourceLocalUrl && current?.sourceVideo
+          ? { sourceVideo: { ...current.sourceVideo, localUrl: sourceLocalUrl } }
+          : {}),
       });
     };
     void reviveCollection("referenceAssets", referenceAssets);
@@ -705,9 +907,12 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
 
   useEffect(() => {
     if (!selected || dragging || multipleNodesSelected) {
+      primaryVideoRef.current?.pause();
+      setTrimPreviewPlaying(false);
       setPopover("none");
       setComposerOpen(false);
       setFrameExtractorOpen(false);
+      setTrimOpen(false);
     }
   }, [dragging, multipleNodesSelected, selected]);
 
@@ -715,6 +920,20 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
     setVideoDuration(0);
     setVideoCurrentTime(0);
   }, [playbackUrl]);
+
+  useEffect(() => {
+    if (!sourceVideo) return;
+    const start = d.clipStart ?? sourceVideo.trimStart;
+    const end = d.clipEnd ?? sourceVideo.trimEnd;
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+    const matchingAsset = referenceAssets.find((asset) => asset.id === sourceVideo.id);
+    if (!matchingAsset || (matchingAsset.trimStart === start && matchingAsset.trimEnd === end)) return;
+    updateNode(id, {
+      referenceAssets: referenceAssets.map((asset) => asset.id === sourceVideo.id
+        ? { ...asset, trimStart: start, trimEnd: end }
+        : asset),
+    });
+  }, [d.clipEnd, d.clipStart, id, referenceAssets, sourceVideo, updateNode]);
 
   const seekVideo = useCallback((seconds: number) => {
     const video = primaryVideoRef.current;
@@ -759,28 +978,129 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
     if (sourceVideo?.localUrl?.startsWith("blob:")) URL.revokeObjectURL(sourceVideo.localUrl);
     if (sourceVideo?.localKey) void forgetVideoReferenceBlob(sourceVideo.localKey);
     revivedLocalKeysRef.current.delete(sourceVideo?.localKey ?? sourceVideo?.id ?? "");
-    updateNode(id, { sourceVideo: undefined });
+    updateNode(id, {
+      sourceVideo: undefined,
+      clipStart: undefined,
+      clipEnd: undefined,
+      mediaWidth: undefined,
+      mediaHeight: undefined,
+      mediaFrameRate: undefined,
+      referenceAssets: sourceVideo
+        ? referenceAssets.filter((asset) => asset.id !== sourceVideo.id)
+        : referenceAssets,
+    });
+    setTrimPreviewPlaying(false);
     setFrameExtractorOpen(false);
-  }, [id, sourceVideo, updateNode]);
+    setTrimOpen(false);
+  }, [id, referenceAssets, sourceVideo, updateNode]);
 
-  const videoToolbar = playbackUrl ? (
-    <div className="flex w-max items-center gap-1 rounded-full border border-line bg-panel/95 p-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.38)] backdrop-blur-xl">
+  const openTrimEditor = useCallback(() => {
+    const duration = videoDuration || sourceVideo?.duration || 0;
+    const start = Math.max(0, d.clipStart ?? sourceVideo?.trimStart ?? 0);
+    const end = Math.min(duration || Number.MAX_SAFE_INTEGER, d.clipEnd ?? sourceVideo?.trimEnd ?? duration);
+    const nextOpen = !trimOpen;
+    primaryVideoRef.current?.pause();
+    setTrimPreviewPlaying(false);
+    setTrimStart(start);
+    setTrimEnd(end);
+    setTrimOpen(nextOpen);
+    setFrameExtractorOpen(false);
+    setComposerOpen(false);
+    if (nextOpen) seekVideo(start);
+  }, [d.clipEnd, d.clipStart, seekVideo, sourceVideo?.duration, sourceVideo?.trimEnd, sourceVideo?.trimStart, trimOpen, videoDuration]);
+
+  const toggleTrimPreview = useCallback(async () => {
+    const video = primaryVideoRef.current;
+    if (!video || !Number.isFinite(video.duration) || trimEnd <= trimStart) {
+      showToast("视频片段尚未准备好", "error");
+      return;
+    }
+    if (!video.paused) {
+      video.pause();
+      setTrimPreviewPlaying(false);
+      return;
+    }
+    if (video.currentTime < trimStart || video.currentTime >= trimEnd - 0.03) {
+      video.currentTime = trimStart;
+      setVideoCurrentTime(trimStart);
+    }
+    try {
+      await video.play();
+      setTrimPreviewPlaying(true);
+    } catch {
+      showToast("浏览器暂时无法播放该视频片段", "error");
+    }
+  }, [showToast, trimEnd, trimStart]);
+
+  const applyTrim = useCallback(() => {
+    const duration = videoDuration || sourceVideo?.duration || 0;
+    const start = Math.max(0, Math.min(trimStart, Math.max(0, duration - 0.05)));
+    const end = Math.min(duration, Math.max(start + 0.05, trimEnd));
+    if (!duration || end <= start) {
+      showToast("请先等待视频时长加载完成", "error");
+      return;
+    }
+    primaryVideoRef.current?.pause();
+    setTrimPreviewPlaying(false);
+    const trimmedSource = sourceVideo ? { ...sourceVideo, trimStart: start, trimEnd: end } : sourceVideo;
+    updateNode(id, {
+      clipStart: start,
+      clipEnd: end,
+      sourceVideo: trimmedSource,
+      referenceAssets: sourceVideo
+        ? referenceAssets.map((asset) => asset.id === sourceVideo.id ? { ...asset, trimStart: start, trimEnd: end } : asset)
+        : referenceAssets,
+    });
+    seekVideo(start);
+    setTrimOpen(false);
+    showToast(`已裁剪为 ${formatVideoTime(start)}–${formatVideoTime(end)}`, "success");
+  }, [id, referenceAssets, seekVideo, showToast, sourceVideo, trimEnd, trimStart, updateNode, videoDuration]);
+
+  const trimDuration = Math.max(0.05, videoDuration || sourceVideo?.duration || 0.05);
+  const trimStartPercent = Math.max(0, Math.min(100, (trimStart / trimDuration) * 100));
+  const trimEndPercent = Math.max(trimStartPercent, Math.min(100, (trimEnd / trimDuration) * 100));
+  const playheadPercent = Math.max(0, Math.min(100, (videoCurrentTime / trimDuration) * 100));
+
+  const videoToolbar = (
+    <div className="relative">
+      <div className="flex w-max items-center gap-1 rounded-full border border-line bg-panel/95 p-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.38)] backdrop-blur-xl">
+        <button
+          type="button"
+          onClick={openTrimEditor}
+          disabled={!playbackUrl}
+          title={playbackUrl ? "裁剪视频" : "请先导入视频"}
+          className={cn(
+            "flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] transition-colors hover:bg-white/[0.07] hover:text-fg",
+            trimOpen ? "bg-white/[0.09] text-fg" : "text-fg-dim",
+            !playbackUrl && "cursor-not-allowed opacity-35 hover:bg-transparent hover:text-fg-dim",
+          )}
+        >
+          <Icon name="Scissors" size={12} />
+          裁剪
+        </button>
       <button
         type="button"
+        disabled={!playbackUrl}
+        title={playbackUrl ? "提取当前视频帧" : "请先导入视频"}
         onClick={() => {
+          primaryVideoRef.current?.pause();
+          setTrimPreviewPlaying(false);
           setFrameExtractorOpen((open) => !open);
+          setTrimOpen(false);
           setComposerOpen(false);
         }}
         className={cn(
           "flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] transition-colors hover:bg-white/[0.07] hover:text-fg",
           frameExtractorOpen ? "bg-white/[0.09] text-fg" : "text-fg-dim",
+          !playbackUrl && "cursor-not-allowed opacity-35 hover:bg-transparent hover:text-fg-dim",
         )}
       >
         <Icon name="Image" size={12} />
         提取帧
       </button>
+      </div>
     </div>
-  ) : undefined;
+  );
 
   return (
     <NodeShell
@@ -795,11 +1115,15 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
       portTop={nodeHeight / 2}
       resizeHandleTop={Math.max(8, nodeHeight - 32)}
       onResizeBegin={() => {
+        primaryVideoRef.current?.pause();
+        setTrimPreviewPlaying(false);
         setComposerOpen(false);
         setFrameExtractorOpen(false);
+        setTrimOpen(false);
       }}
-      toolbar={selected && !multipleNodesSelected && playbackUrl && !running ? videoToolbar : undefined}
-      showDuplicateAction={!isGeneratedResult && !sourceVideo?.localKey}
+      toolbar={selected && !multipleNodesSelected && !running ? videoToolbar : undefined}
+      headerMeta={mediaMeta}
+      showHeaderActions={false}
     >
       <div
         data-body
@@ -874,6 +1198,7 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
         ) : null}
 
         {playbackUrl ? (
+          <>
           <video
             ref={primaryVideoRef}
             src={playbackUrl}
@@ -883,22 +1208,86 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
             onLoadedMetadata={(event) => {
               const video = event.currentTarget;
               setVideoDuration(Number.isFinite(video.duration) ? video.duration : 0);
-              setVideoCurrentTime(video.currentTime || 0);
+              const start = Math.max(0, d.clipStart ?? sourceVideo?.trimStart ?? 0);
+              if (start > 0 && video.currentTime < start) video.currentTime = start;
+              setVideoCurrentTime(video.currentTime || start);
+              const width = video.videoWidth;
+              const height = video.videoHeight;
+              const patch: Partial<VideoNodeData> = { mediaWidth: width, mediaHeight: height };
+              if (sourceVideo) patch.sourceVideo = { ...sourceVideo, width, height, duration: video.duration };
+              if (width && height && (mediaWidth !== width || mediaHeight !== height || sourceVideo?.duration !== video.duration)) updateNode(id, patch);
             }}
             onDurationChange={(event) => {
               const duration = event.currentTarget.duration;
               if (Number.isFinite(duration)) setVideoDuration(duration);
             }}
-            onTimeUpdate={(event) => setVideoCurrentTime(event.currentTarget.currentTime)}
+            onPlay={(event) => {
+              const start = Math.max(0, trimOpen ? trimStart : d.clipStart ?? sourceVideo?.trimStart ?? 0);
+              const end = trimOpen ? trimEnd : d.clipEnd ?? sourceVideo?.trimEnd;
+              if (event.currentTarget.currentTime < start || (end && event.currentTarget.currentTime >= end)) event.currentTarget.currentTime = start;
+              if (trimOpen) setTrimPreviewPlaying(true);
+            }}
+            onPause={() => setTrimPreviewPlaying(false)}
+            onTimeUpdate={(event) => {
+              const video = event.currentTarget;
+              const start = Math.max(0, trimOpen ? trimStart : d.clipStart ?? sourceVideo?.trimStart ?? 0);
+              const end = trimOpen ? trimEnd : d.clipEnd ?? sourceVideo?.trimEnd;
+              if (end && video.currentTime >= end - 0.015) {
+                video.pause();
+                video.currentTime = start;
+                setTrimPreviewPlaying(false);
+              }
+              setVideoCurrentTime(video.currentTime);
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              const video = event.currentTarget;
+              // Keep the native controls strip untouched: only its play
+              // control starts playback. Clicking the picture opens the
+              // shared generation dialog instead.
+              const bounds = video.getBoundingClientRect();
+              if (event.clientY >= bounds.bottom - 44) return;
+              event.preventDefault();
+              if (isGeneratedResult || selectionModifierPressed || dragging) return;
+              video.pause();
+              setFrameExtractorOpen(false);
+              setComposerOpen(true);
+            }}
+            title={isGeneratedResult ? "使用底部播放按钮播放视频" : "点击画面打开视频生成设置；使用底部播放按钮播放"}
             className="h-full w-full bg-black object-contain"
           />
+          {!isGeneratedResult ? (
+            <button
+              type="button"
+              aria-label="打开视频生成设置"
+              title="点击画面打开视频生成设置；使用底部播放按钮播放"
+              className="nodrag absolute inset-x-0 bottom-[48px] top-0 z-[4] cursor-pointer bg-transparent"
+              onClick={(event) => {
+                event.stopPropagation();
+                if (selectionModifierPressed || dragging) return;
+                primaryVideoRef.current?.pause();
+                useStudio.setState((state) => ({
+                  nodes: state.nodes.map((node) => node.id === id
+                    ? { ...node, selected: true }
+                    : node.selected ? { ...node, selected: false } : node),
+                }));
+                setFrameExtractorOpen(false);
+                setTrimOpen(false);
+                setTrimPreviewPlaying(false);
+                setComposerOpen(true);
+              }}
+            />
+          ) : null}
+          </>
         ) : previewImage ? (
           <>
             <img src={previewImage} alt="视频参考图" className="h-full w-full object-contain opacity-70" draggable={false} />
             <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink/55 via-transparent to-transparent" />
             <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-1.5 rounded-full border border-white/14 bg-ink/78 px-2.5 py-1.5 text-[10px] text-fg-dim backdrop-blur-md">
               <Icon name={inputMode === "keyframes" ? "Image" : "Paperclip"} size={11} className="text-accent" />
-              {inputMode === "keyframes" ? `首尾帧 ${keyframeAssets.length}/2` : `参考素材 ${referenceAssets.length}`}
+              {inputMode === "keyframes"
+                ? `首尾帧 ${keyframeAssets.length}/2`
+                : `参考素材 ${referenceCounts.image + referenceCounts.video + referenceCounts.audio}`}
             </div>
           </>
         ) : isGeneratedResult ? (
@@ -955,18 +1344,7 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
         ) : null}
 
         {sourceVideo && !running && !isGeneratedResult ? (
-          <div className="nodrag absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover/node:opacity-100">
-            <button
-              type="button"
-              title="下载导入视频"
-              onClick={(event) => {
-                event.stopPropagation();
-                if (playbackUrl) downloadUrl(playbackUrl, sourceVideo.name || `tfvision-${Date.now()}.mp4`);
-              }}
-              className="rounded-full border border-white/10 bg-ink/75 p-2 text-fg-dim backdrop-blur hover:text-fg"
-            >
-              <Icon name="Download" size={14} />
-            </button>
+          <div className="nodrag absolute right-2 top-2 z-10 flex gap-1 opacity-0 transition-opacity group-hover/node:opacity-100">
             <button
               type="button"
               title="移除导入视频"
@@ -981,6 +1359,140 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
           </div>
         ) : null}
       </div>
+
+      {trimOpen && selected && !dragging && !multipleNodesSelected && playbackUrl ? (
+        <div
+          role="dialog"
+          aria-label="视频裁剪"
+          className="relative left-1/2 z-[40] mt-3 w-[calc(100%+120px)] -translate-x-1/2 rounded-[16px] border border-line bg-card p-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.3)] nodrag"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[11px] font-medium text-fg">裁剪视频</div>
+              <div className="mt-0.5 text-[9px] text-fg-mute">拖动端点选择片段，可在应用前直接预览播放</div>
+            </div>
+            <button
+              type="button"
+              title="关闭裁剪"
+              onClick={() => {
+                primaryVideoRef.current?.pause();
+                setTrimPreviewPlaying(false);
+                setTrimOpen(false);
+              }}
+              className="rounded p-1 text-fg-mute hover:bg-white/[0.06] hover:text-fg"
+            >
+              <Icon name="X" size={12} />
+            </button>
+          </div>
+
+          <div className="mb-3 flex gap-1.5">
+            {[5, 10, 15].map((seconds) => (
+              <button
+                key={seconds}
+                type="button"
+                onClick={() => {
+                  primaryVideoRef.current?.pause();
+                  setTrimPreviewPlaying(false);
+                  const nextEnd = Math.min(trimDuration, trimStart + seconds);
+                  setTrimEnd(nextEnd);
+                  seekVideo(trimStart);
+                }}
+                className="h-7 flex-1 rounded-full border border-line bg-white/[0.025] text-[10px] text-fg-dim hover:border-white/25 hover:text-fg"
+              >
+                {seconds}s
+              </button>
+            ))}
+          </div>
+
+          <div className="rounded-[12px] border border-line bg-ink/55 px-3 pb-2.5 pt-3">
+            <div className="relative h-9">
+              <div className="absolute inset-x-0 top-[14px] h-1.5 rounded-full bg-white/[0.08]" />
+              <div
+                className="absolute top-[14px] h-1.5 rounded-full bg-accent/75 shadow-[0_0_12px_rgba(98,181,255,.2)]"
+                style={{ left: `${trimStartPercent}%`, right: `${100 - trimEndPercent}%` }}
+              />
+              <div className="pointer-events-none absolute top-[8px] h-[18px] w-px bg-white/70" style={{ left: `${playheadPercent}%` }} />
+              <input
+                aria-label="裁剪开始时间"
+                type="range"
+                min={0}
+                max={trimDuration}
+                step={0.05}
+                value={Math.min(trimStart, trimDuration)}
+                onChange={(event) => {
+                  primaryVideoRef.current?.pause();
+                  setTrimPreviewPlaying(false);
+                  const next = Math.min(Number(event.target.value), Math.max(0, trimEnd - 0.05));
+                  setTrimStart(next);
+                  seekVideo(next);
+                }}
+                className="tf-trim-range tf-trim-range--start absolute inset-x-0 top-0 h-8 w-full"
+              />
+              <input
+                aria-label="裁剪结束时间"
+                type="range"
+                min={0}
+                max={trimDuration}
+                step={0.05}
+                value={Math.min(Math.max(trimEnd, 0.05), trimDuration)}
+                onChange={(event) => {
+                  primaryVideoRef.current?.pause();
+                  setTrimPreviewPlaying(false);
+                  const next = Math.max(Number(event.target.value), trimStart + 0.05);
+                  setTrimEnd(next);
+                  seekVideo(Math.max(trimStart, next - 0.03));
+                }}
+                className="tf-trim-range tf-trim-range--end absolute inset-x-0 top-0 h-8 w-full"
+              />
+            </div>
+            <div className="flex items-center justify-between text-[10px] tabular-nums text-fg-dim">
+              <span>{formatVideoTime(trimStart)}</span>
+              <span className="rounded-full bg-white/[0.055] px-2 py-0.5 text-[9px] text-fg-mute">片段 {Math.max(0, trimEnd - trimStart).toFixed(2)}s</span>
+              <span>{formatVideoTime(trimEnd)}</span>
+            </div>
+          </div>
+
+          <div className="mt-3 flex items-center gap-2 border-t border-line pt-3">
+            <button
+              type="button"
+              onClick={() => {
+                primaryVideoRef.current?.pause();
+                setTrimPreviewPlaying(false);
+                updateNode(id, {
+                  clipStart: undefined,
+                  clipEnd: undefined,
+                  sourceVideo: sourceVideo ? { ...sourceVideo, trimStart: undefined, trimEnd: undefined } : sourceVideo,
+                  referenceAssets: sourceVideo
+                    ? referenceAssets.map((asset) => asset.id === sourceVideo.id ? { ...asset, trimStart: undefined, trimEnd: undefined } : asset)
+                    : referenceAssets,
+                });
+                setTrimStart(0);
+                setTrimEnd(videoDuration);
+                seekVideo(0);
+              }}
+              className="text-[10px] text-fg-mute hover:text-fg"
+            >
+              清除裁剪
+            </button>
+            <button
+              type="button"
+              disabled={!videoDuration || trimEnd <= trimStart}
+              onClick={() => void toggleTrimPreview()}
+              className={cn(
+                "ml-auto flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-[11px] font-medium transition-colors disabled:pointer-events-none disabled:opacity-35",
+                trimPreviewPlaying
+                  ? "border-white/20 bg-white/[0.1] text-fg hover:bg-white/[0.14]"
+                  : "border-line-2 bg-white/[0.04] text-fg-dim hover:bg-white/[0.08] hover:text-fg",
+              )}
+            >
+              <Icon name={trimPreviewPlaying ? "Pause" : "Play"} size={12} weight="fill" />
+              {trimPreviewPlaying ? "暂停预览" : "播放片段"}
+            </button>
+            <button type="button" onClick={applyTrim} className="h-8 rounded-full bg-fg px-4 text-[10px] font-medium text-ink hover:bg-white">应用裁剪</button>
+          </div>
+        </div>
+      ) : null}
 
       {frameExtractorOpen && selected && !dragging && !multipleNodesSelected && playbackUrl ? (
         <div
@@ -1044,7 +1556,7 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
           className="relative left-1/2 z-[40] mt-3 w-[calc(100%+192px)] -translate-x-1/2 rounded-[18px] border border-line bg-card p-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.24)] nodrag"
           onMouseDown={(event) => event.stopPropagation()}
         >
-          <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="mb-3 flex items-center gap-2">
             <div className="inline-flex rounded-full border border-line bg-ink/35 p-0.5" role="group" aria-label="视频参考模式">
               {([
                 { value: "references", label: "多模态参考", icon: "Paperclip" },
@@ -1067,66 +1579,36 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
                 </button>
               ))}
             </div>
-            <span className="text-[9px] text-fg-mute">
-              {inputMode === "keyframes"
-                ? needsFrame ? "首帧必填 · 尾帧可选" : "可与参考素材组合 · 尾帧需搭配首帧"
-                : d.model === "v3-omni" ? "可与首尾帧组合 · JPG/PNG · MP4/MOV" : "支持图片、视频与音频"}
+            <span className="ml-auto whitespace-nowrap text-[9px] text-fg-mute/80" title={referenceSummary}>
+              {referenceSummary}
             </span>
-          </div>
-
-          <div className="mb-3 flex items-center gap-1.5">
-            {inputMode === "keyframes" ? (
-              <>
-                <Chip title="首帧图片状态">
-                  <span className={cn("h-1.5 w-1.5 rounded-full", firstFrame ? "bg-[#70d69f]" : "bg-fg-mute/50")} />
-                  首帧 {firstFrame ? "已添加" : "未添加"}
-                </Chip>
-                <Chip title="尾帧图片状态">
-                  <span className={cn("h-1.5 w-1.5 rounded-full", lastFrame ? "bg-[#70d69f]" : "bg-fg-mute/50")} />
-                  尾帧 {lastFrame ? "已添加" : "未添加"}
-                </Chip>
-              </>
-            ) : (
-              <>
-                <Chip title="参考图片数量">
-                  <Icon name="Image" size={11} />
-                  图片 {referenceCounts.image}
-                </Chip>
-                <Chip title="参考视频数量">
-                  <Icon name="VideoCamera" size={11} />
-                  视频 {referenceCounts.video}
-                </Chip>
-                <Chip title="参考音频数量">
-                  <Icon name="MusicNotes" size={11} />
-                  音频 {referenceCounts.audio}
-                </Chip>
-              </>
-            )}
-            <button
-              type="button"
-              disabled={running || (inputMode === "keyframes" && keyframeAssets.length >= 2)}
-              onClick={() => {
-                setRequestedFrameRole(null);
-                referenceFileRef.current?.click();
-              }}
-              className="ml-auto flex h-7 items-center gap-1.5 rounded-full border border-line bg-white/[0.03] px-2.5 text-[10px] text-fg-dim transition-colors hover:border-line-2 hover:text-fg disabled:pointer-events-none disabled:opacity-40"
-            >
-              <Icon name="Plus" size={11} weight="bold" />
-              {inputMode === "keyframes" ? "添加帧图片" : "添加参考素材"}
-            </button>
+            {inputMode === "references" ? (
+              <button
+                type="button"
+                disabled={running}
+                onClick={() => {
+                  setRequestedFrameRole(null);
+                  referenceFileRef.current?.click();
+                }}
+                className="flex h-7 items-center gap-1.5 rounded-full border border-line bg-white/[0.03] px-2.5 text-[10px] text-fg-dim transition-colors hover:border-line-2 hover:text-fg disabled:pointer-events-none disabled:opacity-40"
+              >
+                <Icon name="Plus" size={11} weight="bold" />
+                添加参考素材
+              </button>
+            ) : null}
           </div>
 
           {inputMode === "keyframes" ? (
-            <div className="mb-3 flex items-center justify-center gap-3 rounded-[12px] border border-line bg-ink/30 p-2.5">
+            <div className="mb-2 flex items-center justify-center gap-2 rounded-[10px] border border-line bg-ink/25 p-2">
               {([
-                { role: "first_frame", label: "首帧", hint: needsFrame ? "必填" : "可选" },
-                { role: "last_frame", label: "尾帧", hint: "可选" },
+                { role: "first_frame", label: "首帧" },
+                { role: "last_frame", label: "尾帧" },
               ] as const).map((slot, index) => {
                 const asset = keyframeAssets.find((item) => item.role === slot.role);
                 return (
                   <div key={slot.role} className="contents">
-                    {index ? <span className="shrink-0 text-[15px] text-fg-mute/55">→</span> : null}
-                    <div className="group/reference relative h-[104px] w-[104px] shrink-0 overflow-hidden rounded-[10px] border border-white/10 bg-ink">
+                    {index ? <Icon name="ArrowRight" size={11} className="shrink-0 text-fg-mute/45" /> : null}
+                    <div className="group/reference relative h-[62px] w-[82px] shrink-0 overflow-hidden rounded-[8px] border border-white/10 bg-ink">
                       {asset ? (
                         <img src={asset.localUrl ?? asset.url} alt={`${slot.label} ${asset.name}`} className="h-full w-full object-contain" draggable={false} />
                       ) : (
@@ -1137,16 +1619,13 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
                             setRequestedFrameRole(slot.role);
                             referenceFileRef.current?.click();
                           }}
-                          className="flex h-full w-full flex-col items-center justify-center gap-1.5 text-fg-mute transition-colors hover:bg-white/[0.035] hover:text-fg-dim disabled:pointer-events-none disabled:opacity-40"
+                          className="flex h-full w-full flex-col items-center justify-center gap-1 text-fg-mute transition-colors hover:bg-white/[0.035] hover:text-fg-dim disabled:pointer-events-none disabled:opacity-40"
                         >
-                          <Icon name="Plus" size={14} />
-                          <span className="text-[9px]">添加{slot.label}</span>
+                          <Icon name="Plus" size={12} />
+                          <span className="text-[9px]">{slot.label}</span>
                         </button>
                       )}
-                      <span className="pointer-events-none absolute bottom-1.5 left-1.5 rounded-full border border-white/10 bg-ink/82 px-1.5 py-0.5 text-[8px] text-fg-dim backdrop-blur">
-                        {slot.label} · {slot.hint}
-                        {d.model === "v3-omni" ? ` · @image_${slot.role === "first_frame" ? 1 : 2}` : ""}
-                      </span>
+                      {asset ? <span className="pointer-events-none absolute bottom-1 left-1 rounded-full bg-ink/78 px-1.5 py-0.5 text-[8px] text-fg-dim backdrop-blur">{slot.label}</span> : null}
                       {asset ? (
                         <button
                           type="button"
@@ -1162,7 +1641,7 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
                 );
               })}
             </div>
-          ) : referenceAssets.length ? (
+          ) : referenceAssets.length || connectedImageAssets.length ? (
             <div className="nowheel mb-3 flex gap-2 overflow-x-auto rounded-[12px] border border-line bg-ink/30 p-2.5">
               {referenceAssets.map((asset, index) => (
                 <div key={asset.id} className="group/reference relative h-[82px] w-[96px] shrink-0 overflow-hidden rounded-[10px] border border-white/10 bg-panel-2">
@@ -1198,7 +1677,9 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
                       ? d.model === "v3-omni"
                         ? `@image_${keyframeAssets.length + referenceAssets.slice(0, index + 1).filter((item) => item.kind === "image").length}`
                         : `图片 ${index + 1}`
-                      : asset.kind === "video" && d.model === "v3-omni" ? "@video_1" : asset.kind === "video" ? "视频" : "音频"}
+                      : asset.kind === "video"
+                        ? `${d.model === "v3-omni" ? "@video_1" : "视频"}${asset.trimEnd != null ? ` · ${(asset.trimEnd - (asset.trimStart ?? 0)).toFixed(2)}s` : ""}`
+                        : "音频"}
                   </span>
                   <button
                     type="button"
@@ -1210,58 +1691,25 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
                   </button>
                 </div>
               ))}
-            </div>
-          ) : (
-            <button
-              type="button"
-              disabled={running}
-              onClick={() => {
-                setRequestedFrameRole(null);
-                referenceFileRef.current?.click();
-              }}
-              className="mb-3 flex h-11 w-full items-center justify-center gap-2 rounded-[11px] border border-dashed border-white/12 text-[10px] text-fg-mute transition-colors hover:border-white/25 hover:bg-white/[0.03] hover:text-fg disabled:pointer-events-none disabled:opacity-40"
-            >
-              <Icon name="UploadSimple" size={13} />
-              拖入或选择多模态参考素材
-              <span className="text-fg-mute/60">{d.model === "v3-omni" ? "JPG/PNG · MP4/MOV" : "图片 · 视频 · 音频"}</span>
-            </button>
-          )}
-
-          {d.model === "v3-omni" && inputMode === "references" && referenceCounts.video > 0 ? (
-            <div className="mb-3 flex flex-wrap items-center gap-1.5 rounded-[11px] border border-line bg-ink/25 p-2">
-              <span className="mr-1 text-[9px] text-fg-mute">参考视频用途</span>
-              <Chip
-                active={(d.referType ?? "feature") === "feature"}
-                onClick={() => updateNode(id, { referType: "feature", audioMode: "off", sound: false, keepOriginalSound: false })}
-              >
-                视频参考
-              </Chip>
-              <Chip
-                active={d.referType === "base"}
-                onClick={() => updateNode(id, {
-                  referType: "base",
-                  audioMode: omniAudioMode === "original" ? "original" : "off",
-                  sound: false,
-                  keepOriginalSound: omniAudioMode === "original",
-                  shotsEnabled: false,
-                })}
-              >
-                视频编辑
-              </Chip>
-              <span className="w-full text-[9px] leading-relaxed text-fg-mute/75">
-                {d.referType === "base"
-                  ? "在原视频上增删改内容；不支持分镜和首尾帧，可在参数中选择保留原声"
-                  : "参考内容、风格与运镜生成新镜头；此模式必须关闭音频"}
-              </span>
+              {connectedImageAssets.map((asset) => (
+                <div key={asset.id} className="relative h-[82px] w-[96px] shrink-0 overflow-hidden rounded-[10px] border border-accent/25 bg-panel-2">
+                  <img src={asset.url} alt={asset.name} className="h-full w-full object-cover" draggable={false} />
+                  <span className="pointer-events-none absolute bottom-1.5 left-1.5 flex items-center gap-1 rounded-full border border-accent/20 bg-ink/82 px-1.5 py-0.5 text-[8px] text-accent backdrop-blur">
+                    <Icon name="ShareNetwork" size={8} /> 连线参考
+                  </span>
+                </div>
+              ))}
             </div>
           ) : null}
 
-          {supportsShots(d.model) ? (
+          {d.model !== "v3-omni" && supportsShots(d.model) ? (
             <div className="mb-2 flex items-center justify-between">
               <span className="text-[9px] text-fg-mute">提示词模式</span>
               <Chip
                 active={shotsEnabled}
                 onClick={() => updateNode(id, {
+                  shotMode: shotsEnabled ? "single" : "custom",
+                  shotModeExplicit: true,
                   shotsEnabled: !shotsEnabled,
                   shots: shots.length ? shots : defaultShots(d.duration),
                 })}
@@ -1274,9 +1722,11 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
           {shotsEnabled ? (
             <ShotEditor data={{ ...d, shots }} nodeId={id} />
           ) : (
-            <textarea
+            <ImeSafeTextarea
               value={d.prompt}
-              onChange={(event) => updateNode(id, { prompt: event.target.value })}
+              onValueChange={(nextValue) => updateNode(id, { prompt: nextValue })}
+              onFocus={() => setPromptEditing(true)}
+              onBlur={() => setPromptEditing(false)}
               onKeyDown={(event) => {
                 if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && !sendDisabled) {
                   event.preventDefault();
@@ -1285,15 +1735,20 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
               }}
               placeholder="描述画面如何运动，如：镜头缓缓推近，人物转身微笑，衣摆随风轻摆"
               rows={3}
-              className="tf-composer-prompt nodrag nowheel mb-3 min-h-[72px] max-h-[220px] w-full resize-y overflow-y-auto border-none bg-transparent text-[13px] leading-relaxed text-fg outline-none placeholder:text-fg-mute"
+              className={cn(
+                "tf-composer-prompt nodrag nowheel mb-3 min-h-[72px] max-h-[220px] w-full resize-y overflow-y-auto rounded-[10px] border px-3 py-2.5 text-[13px] leading-relaxed text-fg outline-none transition-[border-color,background-color] placeholder:text-fg-mute",
+                promptEditing
+                  ? "border-transparent bg-transparent"
+                  : "cursor-text border-line bg-white/[0.018] hover:border-line-2 hover:bg-white/[0.026]",
+              )}
               spellCheck={false}
             />
           )}
 
           {!isSeedanceModel(d.model) && d.model !== "v3-omni" ? (
-            <textarea
+            <ImeSafeTextarea
               value={d.negativePrompt ?? ""}
-              onChange={(event) => updateNode(id, { negativePrompt: event.target.value })}
+              onValueChange={(nextValue) => updateNode(id, { negativePrompt: nextValue })}
               placeholder="负向提示词（可选）：不希望出现的内容"
               rows={1}
               className="nowheel mb-3 min-h-[34px] w-full resize-y rounded-[9px] border border-line bg-ink/25 px-2.5 py-2 text-[10px] leading-relaxed text-fg outline-none placeholder:text-fg-mute focus:border-line-2"
@@ -1319,11 +1774,17 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
                           if (!allowedDurations.includes(d.duration)) patch.duration = allowedDurations.includes(5) ? 5 : allowedDurations[0];
                           const allowedRatios = allowedVideoAspectRatios(model.value);
                           if (allowedRatios.length && !allowedRatios.includes(d.aspectRatio)) patch.aspectRatio = "智能";
-                          if (!supportsShots(model.value)) patch.shotsEnabled = false;
+                          if (!supportsShots(model.value)) {
+                            patch.shotMode = "single";
+                            patch.shotsEnabled = false;
+                          }
                           if (model.value === "v3-omni") {
                             patch.audioMode = "off";
                             patch.sound = false;
                             patch.keepOriginalSound = false;
+                            patch.shotMode = "auto";
+                            patch.shotModeExplicit = false;
+                            patch.shotsEnabled = false;
                             if (d.aspectRatio === "智能" && !firstFrame && !referenceCounts.video) patch.aspectRatio = "16:9";
                           }
                           updateNode(id, patch);
@@ -1354,13 +1815,21 @@ export const VideoNode = memo(function VideoNode({ id, selected, dragging, data 
                 </button>
               </div>
               <div ref={paramAreaRef} className="relative min-w-0">
-                {popover === "params" ? <VideoParamPopover data={d} nodeId={id} onClose={() => setPopover("none")} /> : null}
+                {popover === "params" ? (
+                  <VideoParamPopover
+                    data={d}
+                    nodeId={id}
+                    hasConnectedVideo={upstreamVideoCount > 0}
+                    onClose={() => setPopover("none")}
+                  />
+                ) : null}
                 <button
                   type="button"
                   onClick={() => setPopover(popover === "params" ? "none" : "params")}
+                  title={paramSummary}
                   className="flex h-8 min-w-0 items-center gap-1 truncate rounded-full border border-line bg-panel-2/95 px-3 text-[11px] text-fg-dim transition-colors hover:border-line-2 hover:text-fg"
                 >
-                  {d.mode} · {d.duration}s · {d.aspectRatio}
+                  <span className="truncate">{paramSummary}</span>
                   <Icon name="CaretDown" size={9} />
                 </button>
               </div>

@@ -10,6 +10,8 @@ import path from "path";
 import { promisify } from "util";
 import { readSettings } from "@/lib/settings";
 import { resolveBaseUrl } from "@/lib/o1key";
+import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
+import ffprobeInstaller from "@ffprobe-installer/ffprobe";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -43,7 +45,7 @@ async function validateKlingOmniMedia(
   const tempPath = path.join(os.tmpdir(), `tfvision-omni-${crypto.randomUUID()}.${spec.extension}`);
   try {
     await fs.writeFile(tempPath, bytes);
-    const { stdout } = await execFileAsync("ffprobe", [
+    const { stdout } = await execFileAsync(ffprobeInstaller.path, [
       "-v", "error",
       "-select_streams", "v:0",
       "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate:format=duration",
@@ -124,20 +126,52 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: `素材大小超过 ${spec.maxBytes / MB}MB 上限` }, { status: 400 });
   }
 
-  const bytes = Buffer.from(await file.arrayBuffer());
+  let bytes = Buffer.from(await file.arrayBuffer());
+  let uploadContentType = spec.contentType;
+  let uploadExtension = spec.extension;
+  const trimStart = Number(formData.get("trimStart"));
+  const trimEnd = Number(formData.get("trimEnd"));
+  if (spec.kind === "video" && Number.isFinite(trimStart) && Number.isFinite(trimEnd) && trimStart >= 0 && trimEnd > trimStart) {
+    const inputPath = path.join(os.tmpdir(), `tfvision-trim-in-${crypto.randomUUID()}.${spec.extension}`);
+    const outputPath = path.join(os.tmpdir(), `tfvision-trim-out-${crypto.randomUUID()}.mp4`);
+    try {
+      await fs.writeFile(inputPath, bytes);
+      await execFileAsync(ffmpegInstaller.path, [
+        "-y", "-v", "error",
+        "-ss", String(trimStart),
+        "-to", String(trimEnd),
+        "-i", inputPath,
+        "-map", "0:v:0",
+        "-map", "0:a?",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "18",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        outputPath,
+      ], { timeout: 180_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 });
+      bytes = await fs.readFile(outputPath);
+      uploadContentType = "video/mp4";
+      uploadExtension = "mp4";
+    } catch (error) {
+      return NextResponse.json({ error: `视频裁剪失败：${(error as Error).message || "FFmpeg 处理异常"}` }, { status: 400 });
+    } finally {
+      await Promise.all([fs.unlink(inputPath).catch(() => undefined), fs.unlink(outputPath).catch(() => undefined)]);
+    }
+  }
   if (String(formData.get("model") ?? "") === "v3-omni") {
-    const validationError = await validateKlingOmniMedia(bytes, spec);
+    const validationError = await validateKlingOmniMedia(bytes, { kind: spec.kind, extension: uploadExtension });
     if (validationError) return NextResponse.json({ error: validationError }, { status: 400 });
   }
 
   const baseUrl = resolveBaseUrl(s.route);
-  const filename = `${crypto.randomUUID()}.${spec.extension}`;
+  const filename = `${crypto.randomUUID()}.${uploadExtension}`;
 
   try {
     const presignRes = await fetch(`${baseUrl}/v1/storage/presign`, {
       method: "POST",
       headers: { Authorization: `Bearer ${s.apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ filename, content_type: spec.contentType, size: file.size }),
+      body: JSON.stringify({ filename, content_type: uploadContentType, size: bytes.length }),
       signal: AbortSignal.timeout(10_000),
     });
     const presignText = await presignRes.text();
@@ -149,7 +183,7 @@ export async function POST(req: Request) {
 
     const headers = { ...presign.headers };
     const hasHeader = (n: string) => Object.keys(headers).some((k) => k.toLowerCase() === n);
-    if (!hasHeader("content-type")) headers["Content-Type"] = spec.contentType;
+    if (!hasHeader("content-type")) headers["Content-Type"] = uploadContentType;
     if (presign.provider === "local") {
       if (!hasHeader("authorization")) headers.Authorization = `Bearer ${s.apiKey}`;
     } else {

@@ -5,7 +5,7 @@
 
 import { useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { useStudio } from "@/lib/store";
+import { canConnectNodeKinds, useStudio } from "@/lib/store";
 import type { NodeKind } from "@/lib/types";
 import { Icon } from "./icons";
 import { fileToDataURL } from "@/lib/utils";
@@ -21,6 +21,7 @@ export function AddNodeMenu() {
   const closeMenu = useStudio((s) => s.closeMenu);
   const addNode = useStudio((s) => s.addNode);
   const onConnect = useStudio((s) => s.onConnect);
+  const nodes = useStudio((s) => s.nodes);
   const setHistoryOpen = useStudio((s) => s.setHistoryOpen);
   const fileRef = useRef<HTMLInputElement>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -67,6 +68,13 @@ export function AddNodeMenu() {
   const x = Math.min(menu.screen.x, (typeof window !== "undefined" ? window.innerWidth : 1600) - W - 16);
   const y = Math.min(menu.screen.y, (typeof window !== "undefined" ? window.innerHeight : 900) - H - 16);
   const linked = !!(menu.sourceNodeId || menu.targetNodeId);
+  const sourceKind = menu.sourceNodeId ? nodes.find((node) => node.id === menu.sourceNodeId)?.type : undefined;
+  const targetKind = menu.targetNodeId ? nodes.find((node) => node.id === menu.targetNodeId)?.type : undefined;
+  const visibleItems = NODE_ITEMS.filter((item) => {
+    if (menu.sourceNodeId) return canConnectNodeKinds(sourceKind, item.kind);
+    if (menu.targetNodeId) return canConnectNodeKinds(item.kind, targetKind);
+    return true;
+  });
 
   return (
     <AnimatePresence>
@@ -86,9 +94,9 @@ export function AddNodeMenu() {
         style={{ left: x, top: y }}
       >
         <div className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium text-fg-mute">
-          {linked ? "引用该节点生成" : "添加节点"}
+          {menu.targetNodeId ? "添加输入节点" : menu.sourceNodeId ? "引用该节点生成" : "添加节点"}
         </div>
-        {NODE_ITEMS.map((item) => (
+        {visibleItems.map((item) => (
           <button
             key={item.kind}
             type="button"

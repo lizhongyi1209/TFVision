@@ -130,20 +130,23 @@ export function Chip({
   onClick,
   className,
   title,
+  disabled,
 }: {
   children: ReactNode;
   active?: boolean;
   onClick?: () => void;
   className?: string;
   title?: string;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       title={title}
       onClick={onClick}
+      disabled={disabled}
       className={cn(
-        "inline-flex h-7 shrink-0 select-none items-center gap-1 rounded-full border px-2.5 text-[11px] transition-all",
+        "inline-flex h-7 shrink-0 select-none items-center gap-1 rounded-full border px-2.5 text-[11px] transition-all disabled:pointer-events-none disabled:opacity-40",
         active
           ? "border-accent/60 bg-accent/15 text-accent"
           : "border-line bg-panel-2/95 text-fg-dim hover:border-line-2 hover:text-fg",

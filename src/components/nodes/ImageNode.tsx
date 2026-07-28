@@ -5,7 +5,7 @@
 // model picker, 比例·画质·张数 popover, and submit (libTV-style).
 
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { useKeyPress, useReactFlow, type NodeProps } from "@xyflow/react";
+import { useKeyPress, useReactFlow, useViewport, type NodeProps } from "@xyflow/react";
 import type { AppNode } from "@/lib/store";
 import { useStudio } from "@/lib/store";
 import {
@@ -34,6 +34,8 @@ import { Icon } from "../icons";
 import { BrushEditor, CropEditor, ImageCompareViewer, StickerEditor, type ImageCompareCandidate } from "../ImageEditors";
 import { NodeShell, RunningVeil } from "./NodeShell";
 import { Chip } from "../ui";
+import { AmazonAiMetadataPanel } from "../AmazonAiMetadataPanel";
+import { ImeSafeTextarea } from "../ImeSafeTextarea";
 
 const isImageFile = (file: File) =>
   file.type.startsWith("image/") || /\.(?:png|jpe?g|webp)$/i.test(file.name);
@@ -102,10 +104,10 @@ const BatchPromptRow = memo(function BatchPromptRow({
       <span className="mt-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-white/10 bg-white/[0.035] text-[10px] tabular-nums text-fg-mute">
         {index + 1}
       </span>
-      <textarea
+      <ImeSafeTextarea
         value={value}
         rows={2}
-        onChange={(event) => onChange(index, event.target.value)}
+        onValueChange={(nextValue) => onChange(index, nextValue)}
         onKeyDown={(event) => {
           if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
             event.preventDefault();
@@ -533,11 +535,14 @@ function GeneratedImageResult({
   data: ImageNodeData;
 }) {
   const cancelImageGeneration = useStudio((s) => s.cancelImageGeneration);
+  const updateNode = useStudio((s) => s.updateNode);
   const showToast = useStudio((s) => s.showToast);
   const nodes = useStudio((s) => s.nodes);
   const [focusedResultIndex, setFocusedResultIndex] = useState<number | null>(null);
   const [resultActionsVisible, setResultActionsVisible] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
+  const [amazonPanelOpen, setAmazonPanelOpen] = useState(false);
+  const { zoom: canvasZoom } = useViewport();
   const nodeWidth = data.width || 470;
   const nodeHeight = data.height ?? nodeWidth;
   const urls = data.urls.length ? data.urls : data.url ? [data.url] : [];
@@ -569,6 +574,17 @@ function GeneratedImageResult({
     : sourceCandidates;
   const activeResultCandidateId = resultCandidates[activeResultIndex]?.id;
   const initialSourceCandidateId = sourceCandidates[0]?.id;
+  const recordResultSize = useCallback((image: HTMLImageElement) => {
+    if (!image.naturalWidth || !image.naturalHeight) return;
+    if (data.mediaWidth === image.naturalWidth && data.mediaHeight === image.naturalHeight) return;
+    updateNode(id, { mediaWidth: image.naturalWidth, mediaHeight: image.naturalHeight });
+  }, [data.mediaHeight, data.mediaWidth, id, updateNode]);
+
+  const selectResultNode = useCallback(() => {
+    useStudio.setState((state) => ({
+      nodes: state.nodes.map((node) => ({ ...node, selected: node.id === id } as AppNode)),
+    }));
+  }, [id]);
 
   const openResultCompare = () => {
     if (!sourceCandidates.length) {
@@ -583,8 +599,17 @@ function GeneratedImageResult({
   }, [focusedResultIndex, urls.length]);
 
   useEffect(() => {
-    if (!selected) setResultActionsVisible(false);
+    if (!selected) {
+      setResultActionsVisible(false);
+      setAmazonPanelOpen(false);
+    }
   }, [selected]);
+
+  const markAmazonMetadataVerified = (indices: number[]) => {
+    const next = new Set(data.amazonAiDisclosure?.taggedIndices ?? []);
+    for (const index of indices) next.add(index);
+    updateNode(id, { amazonAiDisclosure: { taggedIndices: [...next].sort((a, b) => a - b), updatedAt: Date.now() } });
+  };
 
   return (
     <NodeShell
@@ -595,8 +620,8 @@ function GeneratedImageResult({
       width={nodeWidth}
       height={nodeHeight}
       running={running}
-      showHeaderActions={!running}
-      showDuplicateAction={data.status === "success"}
+      headerMeta={data.mediaWidth && data.mediaHeight ? `${data.mediaWidth} × ${data.mediaHeight}` : undefined}
+      showHeaderActions={false}
       frameless
       portTop={nodeHeight / 2}
       resizeHandleTop={Math.max(8, nodeHeight - 32)}
@@ -656,8 +681,10 @@ function GeneratedImageResult({
                 <img
                   src={focusedResultUrl}
                   alt={`生成结果 ${focusedResultIndex! + 1}`}
+                  onLoad={(event) => recordResultSize(event.currentTarget)}
                   onClick={(event) => {
                     event.stopPropagation();
+                    selectResultNode();
                     setResultActionsVisible((current) => !current);
                   }}
                   className="h-full w-full cursor-pointer object-contain"
@@ -682,8 +709,10 @@ function GeneratedImageResult({
                 <img
                   src={urls[0]}
                   alt="生成结果"
+                  onLoad={(event) => recordResultSize(event.currentTarget)}
                   onClick={(event) => {
                     event.stopPropagation();
+                    selectResultNode();
                     setResultActionsVisible((current) => !current);
                   }}
                   className="h-full w-full cursor-pointer object-contain"
@@ -709,12 +738,13 @@ function GeneratedImageResult({
                     onClick={(event) => {
                       if (isMultiSelectClick(event)) return;
                       event.stopPropagation();
+                      selectResultNode();
                       setFocusedResultIndex(index);
                       setResultActionsVisible(true);
                     }}
                     className="nodrag group/result relative aspect-square min-h-0 overflow-hidden rounded-[8px] border border-transparent bg-ink text-left transition-[border-color,transform,box-shadow] duration-200 hover:z-[1] hover:scale-[1.012] hover:border-white/20 hover:shadow-[0_10px_28px_rgba(0,0,0,.35)] focus-visible:border-white/35 focus-visible:outline-none"
                   >
-                    <img src={url} alt={`生成结果 ${index + 1}`} loading="lazy" className="h-full w-full object-contain p-1" draggable={false} />
+                    <img src={url} alt={`生成结果 ${index + 1}`} loading="lazy" onLoad={(event) => { if (index === activeResultIndex) recordResultSize(event.currentTarget); }} className="h-full w-full object-contain p-1" draggable={false} />
                     <span className="pointer-events-none absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full border border-white/12 bg-ink/72 text-fg-dim opacity-0 shadow-[0_6px_18px_rgba(0,0,0,.3)] backdrop-blur transition-[opacity,transform] group-hover/result:opacity-100 group-hover/result:scale-100 group-focus-visible/result:opacity-100">
                       <Icon name="ArrowsOutSimple" size={12} />
                     </span>
@@ -740,6 +770,33 @@ function GeneratedImageResult({
                   <Icon name="Swap" size={12} />
                   对比
                 </button>
+                <span className="h-4 border-l border-white/10" />
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    selectResultNode();
+                    setAmazonPanelOpen((current) => !current);
+                  }}
+                  className={cn(
+                    "flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] transition-colors hover:bg-white/[0.08] hover:text-fg",
+                    amazonPanelOpen ? "bg-white/[0.08] text-fg" : "text-fg-dim",
+                  )}
+                >
+                  <Icon name="SealCheck" size={12} />
+                  亚马逊合规
+                </button>
+                {amazonPanelOpen ? (
+                  <AmazonAiMetadataPanel
+                    images={urls.map((src, index) => ({ index, src, label: resultLabels[index] || `生成结果 ${index + 1}` }))}
+                    initialIndices={urls.length > 1 && focusedResultIndex === null ? urls.map((_, index) => index) : [activeResultIndex]}
+                    taggedIndices={data.amazonAiDisclosure?.taggedIndices ?? []}
+                    nodeLabel={data.label}
+                    canvasZoom={canvasZoom}
+                    onClose={() => setAmazonPanelOpen(false)}
+                    onVerified={markAmazonMetadataVerified}
+                  />
+                ) : null}
               </div>
             ) : null}
           </>
@@ -800,9 +857,16 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   const [stickerSrc, setStickerSrc] = useState<string | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
   const [externalCompareImage, setExternalCompareImage] = useState<ImageCompareCandidate | null>(null);
+  const [amazonPanelOpen, setAmazonPanelOpen] = useState(false);
+  const { zoom: canvasZoom } = useViewport();
   const rf = useReactFlow();
   const selectionModifierPressed = useKeyPress(["Control", "Meta", "Shift"]);
   const multipleNodesSelected = nodes.reduce((count, node) => count + (node.selected ? 1 : 0), 0) > 1;
+  const recordImageSize = useCallback((image: HTMLImageElement) => {
+    if (!image.naturalWidth || !image.naturalHeight) return;
+    if (d.mediaWidth === image.naturalWidth && d.mediaHeight === image.naturalHeight) return;
+    updateNode(id, { mediaWidth: image.naturalWidth, mediaHeight: image.naturalHeight });
+  }, [d.mediaHeight, d.mediaWidth, id, updateNode]);
 
   const submitGeneration = useCallback(async () => {
     const resultNodeId = await generateImage(id);
@@ -907,6 +971,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
     if (!selected || dragging || multipleNodesSelected) {
       setPopover("none");
       setComposerOpen(false);
+      setAmazonPanelOpen(false);
     }
   }, [dragging, multipleNodesSelected, selected]);
 
@@ -1057,7 +1122,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
     const urls = ownImageUrls.filter((_, imageIndex) => imageIndex !== index);
     if (!urls.length) {
       setFocusedImageIndex(null);
-      updateNode(id, { url: null, urls: [], activeIndex: 0, status: "idle", editMask: undefined, editGuide: undefined, editMaskImageIndex: undefined });
+      updateNode(id, { url: null, urls: [], activeIndex: 0, status: "idle", editMask: undefined, editGuide: undefined, editMaskImageIndex: undefined, amazonAiDisclosure: undefined });
       return;
     }
 
@@ -1067,7 +1132,19 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
       if (focusedIndex === null || focusedIndex === index) return null;
       return focusedIndex > index ? focusedIndex - 1 : focusedIndex;
     });
-    updateNode(id, { url: urls[activeIndex], urls, activeIndex, status: "idle", editMask: undefined, editGuide: undefined, editMaskImageIndex: undefined });
+    const taggedIndices = (d.amazonAiDisclosure?.taggedIndices ?? [])
+      .filter((taggedIndex) => taggedIndex !== index)
+      .map((taggedIndex) => taggedIndex > index ? taggedIndex - 1 : taggedIndex);
+    updateNode(id, {
+      url: urls[activeIndex],
+      urls,
+      activeIndex,
+      status: "idle",
+      editMask: undefined,
+      editGuide: undefined,
+      editMaskImageIndex: undefined,
+      amazonAiDisclosure: taggedIndices.length ? { taggedIndices, updatedAt: Date.now() } : undefined,
+    });
   };
 
   const focusImage = (url: string, index: number) => {
@@ -1080,7 +1157,18 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
     if (!ownImageUrls.length) return;
     const replaceIndex = activeImageIndex;
     const urls = ownImageUrls.map((url, index) => (index === replaceIndex ? nextUrl : url));
-    updateNode(id, { url: nextUrl, urls, activeIndex: replaceIndex, status: "idle", error: undefined, editMask: undefined, editGuide: undefined, editMaskImageIndex: undefined });
+    const taggedIndices = (d.amazonAiDisclosure?.taggedIndices ?? []).filter((index) => index !== replaceIndex);
+    updateNode(id, {
+      url: nextUrl,
+      urls,
+      activeIndex: replaceIndex,
+      status: "idle",
+      error: undefined,
+      editMask: undefined,
+      editGuide: undefined,
+      editMaskImageIndex: undefined,
+      amazonAiDisclosure: taggedIndices.length ? { taggedIndices, updatedAt: Date.now() } : undefined,
+    });
     setFocusedImageIndex(ownImageUrls.length > 1 ? replaceIndex : null);
     setEditor("none");
     setStickerSrc(null);
@@ -1107,24 +1195,54 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
     setCompareOpen(true);
   };
 
+  const markAmazonMetadataVerified = (indices: number[]) => {
+    const next = new Set(d.amazonAiDisclosure?.taggedIndices ?? []);
+    for (const index of indices) next.add(index);
+    updateNode(id, { amazonAiDisclosure: { taggedIndices: [...next].sort((a, b) => a - b), updatedAt: Date.now() } });
+  };
+
   const quickToolbar = activeImageUrl ? (
-    <div className="flex w-max flex-nowrap items-center gap-1 whitespace-nowrap rounded-full border border-line bg-panel/95 p-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.38)] backdrop-blur-xl">
-      <button type="button" onClick={() => setEditor("crop")} className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] text-fg-dim transition-colors hover:bg-white/[0.07] hover:text-fg">
-        <Icon name="Scissors" size={12} className="shrink-0" />裁剪
-      </button>
-      <span className="h-4 shrink-0 border-l border-line" />
-      <button type="button" onClick={() => stickerFileRef.current?.click()} className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] text-fg-dim transition-colors hover:bg-white/[0.07] hover:text-fg">
-        <Icon name="Stack" size={12} className="shrink-0" />贴图
-      </button>
-      <span className="h-4 shrink-0 border-l border-line" />
-      <button type="button" onClick={() => setEditor("brush")} className={cn("relative flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] transition-colors hover:bg-white/[0.07] hover:text-fg", hasActiveEditMask ? "bg-[#ff684c]/10 text-[#ff8a72]" : "text-fg-dim")}>
-        <Icon name="PaintBrush" size={12} className="shrink-0" />画笔
-        {hasActiveEditMask ? <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-[#ff684c] shadow-[0_0_8px_rgba(255,104,76,.7)]" /> : null}
-      </button>
-      <span className="h-4 shrink-0 border-l border-line" />
-      <button type="button" onClick={openNodeCompare} className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] text-fg-dim transition-colors hover:bg-white/[0.07] hover:text-fg">
-        <Icon name="Swap" size={12} className="shrink-0" />对比
-      </button>
+    <div className="relative">
+      <div className="flex w-max flex-nowrap items-center gap-1 whitespace-nowrap rounded-full border border-line bg-panel/95 p-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.38)] backdrop-blur-xl">
+        <button type="button" onClick={() => setEditor("crop")} className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] text-fg-dim transition-colors hover:bg-white/[0.07] hover:text-fg">
+          <Icon name="Scissors" size={12} className="shrink-0" />裁剪
+        </button>
+        <span className="h-4 shrink-0 border-l border-line" />
+        <button type="button" onClick={() => stickerFileRef.current?.click()} className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] text-fg-dim transition-colors hover:bg-white/[0.07] hover:text-fg">
+          <Icon name="Stack" size={12} className="shrink-0" />贴图
+        </button>
+        <span className="h-4 shrink-0 border-l border-line" />
+        <button type="button" onClick={() => setEditor("brush")} className={cn("relative flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] transition-colors hover:bg-white/[0.07] hover:text-fg", hasActiveEditMask ? "bg-[#ff684c]/10 text-[#ff8a72]" : "text-fg-dim")}>
+          <Icon name="PaintBrush" size={12} className="shrink-0" />画笔
+          {hasActiveEditMask ? <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-[#ff684c] shadow-[0_0_8px_rgba(255,104,76,.7)]" /> : null}
+        </button>
+        <span className="h-4 shrink-0 border-l border-line" />
+        <button type="button" onClick={openNodeCompare} className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] text-fg-dim transition-colors hover:bg-white/[0.07] hover:text-fg">
+          <Icon name="Swap" size={12} className="shrink-0" />对比
+        </button>
+        <span className="h-4 shrink-0 border-l border-line" />
+        <button
+          type="button"
+          onClick={() => setAmazonPanelOpen((current) => !current)}
+          className={cn(
+            "flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[11px] transition-colors hover:bg-white/[0.07] hover:text-fg",
+            amazonPanelOpen ? "bg-white/[0.07] text-fg" : "text-fg-dim",
+          )}
+        >
+          <Icon name="SealCheck" size={12} className="shrink-0" />亚马逊合规
+        </button>
+      </div>
+      {amazonPanelOpen ? (
+        <AmazonAiMetadataPanel
+          images={ownImageUrls.map((src, index) => ({ index, src, label: `节点图片 ${index + 1}` }))}
+          initialIndices={ownImageUrls.length > 1 && focusedImageIndex === null ? ownImageUrls.map((_, index) => index) : [activeImageIndex]}
+          taggedIndices={d.amazonAiDisclosure?.taggedIndices ?? []}
+          nodeLabel={d.label}
+          canvasZoom={canvasZoom}
+          onClose={() => setAmazonPanelOpen(false)}
+          onVerified={markAmazonMetadataVerified}
+        />
+      ) : null}
     </div>
   ) : undefined;
 
@@ -1153,6 +1271,8 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
       resizeHandleTop={Math.max(8, nodeHeight - 32)}
       onResizeBegin={() => setComposerOpen(false)}
       toolbar={selected && !multipleNodesSelected && activeImageUrl && !running ? quickToolbar : undefined}
+      headerMeta={d.mediaWidth && d.mediaHeight ? `${d.mediaWidth} × ${d.mediaHeight}` : undefined}
+      showHeaderActions={false}
     >
       {/* ── Canvas area ── */}
       <div
@@ -1244,6 +1364,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
                   <img
                     src={displayUrl}
                     alt={`参考图 ${index + 1}${hasEditPreview ? "，已标记局部编辑范围" : ""}`}
+                    onLoad={(event) => { if (index === (focusedImageIndex ?? d.activeIndex ?? 0)) recordImageSize(event.currentTarget); }}
                     className="h-full w-full object-contain"
                     draggable={false}
                   />
@@ -1275,6 +1396,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
             <img
               src={activePreviewUrl}
               alt={`${focusedImageUrl ? `参考图 ${(focusedImageIndex ?? 0) + 1}` : "参考图"}${hasActiveEditMask ? "，已标记局部编辑范围" : ""}`}
+              onLoad={(event) => recordImageSize(event.currentTarget)}
               onClick={(event) => {
                 if (selectionModifierPressed || isMultiSelectClick(event)) return;
                 setComposerOpen(true);
@@ -1470,9 +1592,9 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
               <span className="text-[10px] font-medium tracking-wide text-fg-mute">通用提示词</span>
               <span className="text-[9px] text-fg-mute/70">每个组合都会使用，不添加业务预设</span>
             </div>
-            <textarea
+            <ImeSafeTextarea
               value={d.prompt}
-              onChange={(event) => updateNode(id, { prompt: event.target.value })}
+              onValueChange={(nextValue) => updateNode(id, { prompt: nextValue })}
               onKeyDown={(event) => {
                 if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && !sendDisabled) {
                   event.preventDefault();
@@ -1505,15 +1627,17 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
             }}
           />
         ) : (
-          <textarea
+          <ImeSafeTextarea
             ref={promptRef}
             value={d.prompt}
-            onChange={(e) => {
-              promptHeightRef.current = resizePromptTextarea(e.currentTarget);
-              promptValueRef.current = e.currentTarget.value;
+            onValueChange={(nextValue) => {
+              const textarea = promptRef.current;
+              if (!textarea) return;
+              promptHeightRef.current = resizePromptTextarea(textarea);
+              promptValueRef.current = nextValue;
               promptMeasuredRef.current = true;
               persistedPromptHeightRef.current = promptHeightRef.current;
-              updateNode(id, { prompt: e.target.value, promptHeight: promptHeightRef.current });
+              updateNode(id, { prompt: nextValue, promptHeight: promptHeightRef.current });
             }}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !sendDisabled) {
