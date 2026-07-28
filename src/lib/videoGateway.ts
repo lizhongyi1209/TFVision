@@ -2,6 +2,7 @@
 // Builds Kling / Seedance request bodies and extracts task ids / video URLs.
 
 import type { VideoAspectRatio, VideoJobParams, VideoModel, VideoResolution } from "./types";
+import { assignVideoPromptReferences } from "./videoPromptReferences.ts";
 
 export const VIDEO_MODEL_IDS: Record<VideoModel, string> = {
   "v3": "kling-v3",
@@ -50,6 +51,13 @@ export function allowedVideoAspectRatios(model: VideoModel): readonly VideoAspec
 
 export function supportsShots(model: VideoModel): boolean {
   return model !== "v2-6" && !isSeedanceModel(model);
+}
+
+export function videoStatusEndpoint(model: VideoModel, taskId: string): string {
+  const encodedTaskId = encodeURIComponent(taskId);
+  if (model === "v3-omni") return `/kling/omni-video/kling-3.0-omni/${encodedTaskId}`;
+  if (isSeedanceModel(model)) return `/v1/video/generations/${encodedTaskId}`;
+  return `/kling/v1/videos/image2video/${encodedTaskId}`;
 }
 
 export function maxReferenceImages(model: VideoModel): number {
@@ -127,9 +135,9 @@ export function buildKlingOmniGenerationBody(params: VideoJobParams): Record<str
 
   const audioMode = params.audioMode
     ?? (params.keepOriginalSound ? "original" : params.sound ? "native" : "off");
-  if (hasFeatureVideo && audioMode !== "off") throw new Error("特征参考视频模式的音频只能关闭");
+  if (hasFeatureVideo && audioMode === "native") throw new Error("特征参考视频模式不能生成原生音频，可选择保留原声或关闭声音");
   if (hasBaseVideo && audioMode === "native") throw new Error("基础视频编辑模式不支持生成原生音频");
-  if (!hasBaseVideo && audioMode === "original") throw new Error("只有基础视频编辑模式可以保留原声");
+  if (!hasVideo && audioMode === "original") throw new Error("没有参考视频时不能保留原声");
 
   const ratio = params.aspectRatio ?? "智能";
   if (!KLING_OMNI_RATIOS.has(ratio)) throw new Error("可灵 Omni 宽高比无效");
@@ -137,17 +145,26 @@ export function buildKlingOmniGenerationBody(params: VideoJobParams): Record<str
     throw new Error("没有首帧或参考视频时必须选择 16:9、9:16 或 1:1");
   }
 
+  const contentReferences = assignVideoPromptReferences([
+    ...(firstUrl ? [{ key: "first-frame", kind: "image" as const, name: firstUrl, role: "first_frame" as const }] : []),
+    ...(lastUrl ? [{ key: "last-frame", kind: "image" as const, name: lastUrl, role: "last_frame" as const }] : []),
+    ...referenceUrls.map((url, index) => ({ key: `reference-image-${index}`, kind: "image" as const, name: url, role: "reference" as const })),
+    ...(hasVideo ? [{ key: "reference-video", kind: "video" as const, name: videoUrls[0], role: "reference" as const }] : []),
+  ]);
   const contents: Record<string, unknown>[] = [{ type: "prompt", text: promptText }];
-  let imageIndex = 1;
-  if (firstUrl) contents.push({ type: "first_frame", url: firstUrl, id: `image_${imageIndex++}` });
-  if (lastUrl) contents.push({ type: "last_frame", url: lastUrl, id: `image_${imageIndex++}` });
-  for (const url of referenceUrls) contents.push({ type: "refer_image", url, id: `image_${imageIndex++}` });
-  if (hasVideo) {
-    contents.push({
-      type: hasBaseVideo ? "base_video" : "feature_video",
-      url: videoUrls[0],
-      id: "video_1",
-    });
+  for (const reference of contentReferences) {
+    if (reference.kind === "image") {
+      const type = reference.role === "first_frame"
+        ? "first_frame"
+        : reference.role === "last_frame" ? "last_frame" : "refer_image";
+      contents.push({ type, url: reference.name, id: reference.promptId });
+    } else if (reference.kind === "video") {
+      contents.push({
+        type: hasBaseVideo ? "base_video" : "feature_video",
+        url: reference.name,
+        id: reference.promptId,
+      });
+    }
   }
 
   const settings: Record<string, unknown> = {

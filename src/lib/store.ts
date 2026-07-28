@@ -42,9 +42,15 @@ export type AppNode = Node<TextNodeData | ImageNodeData | VideoNodeData | GroupN
 
 export function canConnectNodeKinds(source: string | undefined, target: string | undefined): boolean {
   if (!source || !target) return false;
-  if (source === "image") return target === "text" || target === "image" || target === "video";
-  if (source === "text") return target === "image" || target === "video";
-  if (source === "video") return target === "video";
+  if (source === "imageAsset") return target === "text" || target === "imageGenerator" || target === "videoGenerator";
+  if (source === "videoAsset") return target === "videoGenerator";
+  if (source === "text") return target === "imageGenerator" || target === "videoGenerator";
+  if (source === "imageGenerator") return target === "imageAsset";
+  if (source === "videoGenerator") return target === "videoAsset";
+  // Legacy boards are migrated on load, but keeping these rules makes a
+  // partially migrated snapshot safe to inspect and reconnect.
+  if (source === "image") return target === "text" || target === "image" || target === "video" || target === "imageGenerator" || target === "videoGenerator";
+  if (source === "video") return target === "video" || target === "videoGenerator";
   return false;
 }
 
@@ -79,7 +85,13 @@ export interface MenuState {
 
 const uid = () => `n-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-const KIND_LABEL: Record<NodeKind, string> = { text: "文本节点", image: "图片节点", video: "视频节点" };
+const KIND_LABEL: Record<NodeKind, string> = {
+  text: "文本节点",
+  imageAsset: "图片素材",
+  imageGenerator: "图片生成",
+  videoAsset: "视频素材",
+  videoGenerator: "视频生成",
+};
 
 export function defaultTextData(label: string): TextNodeData {
   return { label, text: "", reversing: false };
@@ -138,6 +150,157 @@ export function defaultVideoData(label: string): VideoNodeData {
   };
 }
 
+function migrateLegacyBoard(rawNodes: AppNode[], rawEdges: Edge[]) {
+  const occupiedIds = new Set(rawNodes.map((node) => node.id));
+  const split = new Map<string, { assetId?: string; generatorId: string }>();
+  const addedInputEdges: Edge[] = [];
+  const nodes: AppNode[] = [];
+
+  const nextSplitId = (base: string) => {
+    let candidate = `${base}-generator`;
+    let index = 2;
+    while (occupiedIds.has(candidate)) candidate = `${base}-generator-${index++}`;
+    occupiedIds.add(candidate);
+    return candidate;
+  };
+
+  for (const node of rawNodes) {
+    if (node.type === "image") {
+      const data = node.data as ImageNodeData;
+      if (data.isGeneratedResult) {
+        nodes.push({ ...node, type: "imageAsset" } as AppNode);
+        split.set(node.id, { assetId: node.id, generatorId: node.id });
+        continue;
+      }
+      const urls = data.urls?.length ? data.urls : data.url ? [data.url] : [];
+      if (!urls.length) {
+        nodes.push({ ...node, type: "imageGenerator", data: { ...data, width: data.width || 420, height: Math.max(520, data.height ?? 520) } } as AppNode);
+        split.set(node.id, { generatorId: node.id });
+        continue;
+      }
+      const generatorId = nextSplitId(node.id);
+      const assetData: ImageNodeData = {
+        ...data,
+        label: String(data.label || "图片素材").replace("图片节点", "图片素材"),
+        status: "idle",
+        progress: 0,
+        error: undefined,
+        jobIds: [],
+        isGeneratedResult: undefined,
+        generationSourceId: undefined,
+      };
+      const generatorData: ImageNodeData = {
+        ...data,
+        label: `${String(data.label || "图片").replace(/节点\s*\d*$/, "").trim()}生成`,
+        url: null,
+        urls: [],
+        activeIndex: 0,
+        status: "idle",
+        progress: 0,
+        error: undefined,
+        jobIds: [],
+        editMask: undefined,
+        editGuide: undefined,
+        editMaskImageIndex: undefined,
+        amazonAiDisclosure: undefined,
+        mediaWidth: undefined,
+        mediaHeight: undefined,
+        width: 420,
+        height: 520,
+      };
+      const width = data.width || 470;
+      nodes.push({ ...node, type: "imageAsset", data: assetData } as AppNode);
+      nodes.push({
+        ...node,
+        id: generatorId,
+        type: "imageGenerator",
+        selected: false,
+        position: { x: node.position.x + width + 150, y: node.position.y },
+        data: generatorData,
+      } as AppNode);
+      split.set(node.id, { assetId: node.id, generatorId });
+      addedInputEdges.push({ id: `e-migrate-${node.id}-${generatorId}`, source: node.id, target: generatorId });
+      continue;
+    }
+
+    if (node.type === "video") {
+      const data = node.data as VideoNodeData;
+      if (data.isGeneratedResult) {
+        nodes.push({ ...node, type: "videoAsset" } as AppNode);
+        split.set(node.id, { assetId: node.id, generatorId: node.id });
+        continue;
+      }
+      const hasMedia = Boolean(data.sourceVideo || data.url || data.remoteUrl);
+      if (!hasMedia) {
+        nodes.push({ ...node, type: "videoGenerator", data: { ...data, width: data.width || 460, height: undefined } } as AppNode);
+        split.set(node.id, { generatorId: node.id });
+        continue;
+      }
+      const generatorId = nextSplitId(node.id);
+      const assetData: VideoNodeData = {
+        ...data,
+        label: String(data.label || "视频素材").replace("视频节点", "视频素材"),
+        status: "idle",
+        progress: 0,
+        error: undefined,
+        taskId: undefined,
+        isGeneratedResult: undefined,
+        generationSourceId: undefined,
+      };
+      const generatorData: VideoNodeData = {
+        ...data,
+        label: `${String(data.label || "视频").replace(/节点\s*\d*$/, "").trim()}生成`,
+        url: null,
+        remoteUrl: undefined,
+        sourceVideo: undefined,
+        status: "idle",
+        progress: 0,
+        error: undefined,
+        taskId: undefined,
+        mediaWidth: undefined,
+        mediaHeight: undefined,
+        mediaFrameRate: undefined,
+        clipStart: undefined,
+        clipEnd: undefined,
+        width: 460,
+        height: undefined,
+      };
+      const width = data.width || 430;
+      nodes.push({ ...node, type: "videoAsset", data: assetData } as AppNode);
+      nodes.push({
+        ...node,
+        id: generatorId,
+        type: "videoGenerator",
+        selected: false,
+        position: { x: node.position.x + width + 150, y: node.position.y },
+        data: generatorData,
+      } as AppNode);
+      split.set(node.id, { assetId: node.id, generatorId });
+      addedInputEdges.push({ id: `e-migrate-${node.id}-${generatorId}`, source: node.id, target: generatorId });
+      continue;
+    }
+
+    nodes.push(node);
+  }
+
+  const edges = rawEdges.map((edge) => {
+    const sourceSplit = split.get(edge.source);
+    const targetSplit = split.get(edge.target);
+    const source = sourceSplit
+      ? edge.data?.generation === true
+        ? sourceSplit.generatorId
+        : sourceSplit.assetId ?? sourceSplit.generatorId
+      : edge.source;
+    const target = targetSplit ? targetSplit.generatorId : edge.target;
+    return { ...edge, source, target };
+  });
+  const edgeKeys = new Set(edges.map((edge) => `${edge.source}:${edge.target}`));
+  for (const edge of addedInputEdges) {
+    if (!edgeKeys.has(`${edge.source}:${edge.target}`)) edges.push(edge);
+  }
+  return { nodes, edges };
+}
+
 // Poll timers live outside the store so they never serialize.
 const pollTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const submitControllers = new Map<string, AbortController>();
@@ -192,7 +355,7 @@ async function cloneLocalVideoAsset(asset: VideoReferenceAsset): Promise<VideoRe
 
 async function prepareCopiedNodeData(node: AppNode): Promise<Record<string, unknown>> {
   const data = resetCopiedNodeData(node);
-  if (node.type !== "video") return data;
+  if (node.type !== "videoAsset" && node.type !== "videoGenerator") return data;
   const videoData = data as VideoNodeData;
   const [sourceVideo, referenceAssets, keyframeAssets] = await Promise.all([
     videoData.sourceVideo ? cloneLocalVideoAsset(videoData.sourceVideo) : undefined,
@@ -234,7 +397,7 @@ async function ensurePublicVideoReferenceUrl(asset: VideoReferenceAsset, model: 
 }
 
 function clearVideoReferenceFiles(node: AppNode | undefined) {
-  if (!node || node.type !== "video") return;
+  if (!node || (node.type !== "videoAsset" && node.type !== "videoGenerator")) return;
   const data = node.data as VideoNodeData;
   const assets = [
     ...(data.sourceVideo ? [data.sourceVideo] : []),
@@ -265,7 +428,7 @@ function nextGeneratedImageLabel(baseLabel: string, nodes: AppNode[], ignoredNod
   const base = baseLabel.trim() || "生成结果";
   const usedLabels = new Set(
     nodes.flatMap((candidate) => {
-      if (candidate.type !== "image" || ignoredNodeIds.has(candidate.id)) return [];
+      if (candidate.type !== "imageAsset" || ignoredNodeIds.has(candidate.id)) return [];
       const label = String((candidate.data as ImageNodeData).label ?? "").trim();
       return label ? [label] : [];
     }),
@@ -281,7 +444,7 @@ function nextGeneratedVideoLabel(baseLabel: string, nodes: AppNode[]) {
   const base = `${baseLabel.trim() || "视频节点"} · 结果`;
   const usedLabels = new Set(
     nodes.flatMap((candidate) => {
-      if (candidate.type !== "video") return [];
+      if (candidate.type !== "videoAsset") return [];
       const label = String((candidate.data as VideoNodeData).label ?? "").trim();
       return label ? [label] : [];
     }),
@@ -512,8 +675,12 @@ export const useStudio = create<StudioState>((set, get) => ({
     const data = (
       kind === "text"
         ? { ...defaultTextData(label), ...extra }
-        : kind === "image"
-          ? { ...defaultImageData(label), ...extra }
+        : kind === "imageAsset" || kind === "imageGenerator"
+          ? {
+              ...defaultImageData(label),
+              ...(kind === "imageGenerator" ? { width: 420, height: 520 } : {}),
+              ...extra,
+            }
           : { ...defaultVideoData(label), ...extra }
     ) as TextNodeData | ImageNodeData | VideoNodeData;
     const id = uid();
@@ -554,7 +721,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   duplicateNode: (id) => {
     const src = get().nodes.find((n) => n.id === id);
     if (!src) return;
-    const kind = (src.type ?? "image") as NodeKind;
+    const kind = (src.type ?? "imageAsset") as NodeKind;
     const pos = { x: src.position.x + 60, y: src.position.y + 60 };
     const data = JSON.parse(JSON.stringify(src.data)) as Record<string, unknown>;
     // Duplicates never inherit an in-flight job.
@@ -562,7 +729,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     data.progress = 0;
     data.jobIds = [];
     data.taskId = undefined;
-    if (kind === "image" && data.isGeneratedResult) {
+    if (kind === "imageAsset" && data.isGeneratedResult) {
       delete data.label;
       data.isGeneratedResult = undefined;
       data.generationSourceId = undefined;
@@ -785,7 +952,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   cancelImageGeneration: (nodeId) => {
     const node = get().nodes.find((candidate) => candidate.id === nodeId);
     const data = node?.data as ImageNodeData | undefined;
-    if (!node || node.type !== "image" || !data?.isGeneratedResult || data.status !== "running") return;
+    if (!node || node.type !== "imageAsset" || !data?.isGeneratedResult || data.status !== "running") return;
 
     clearImageRuntime(nodeId);
     get().updateNode(nodeId, {
@@ -801,7 +968,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   generateImage: async (nodeId) => {
     const state = get();
     const node = state.nodes.find((n) => n.id === nodeId);
-    if (!node || node.type !== "image") return;
+    if (!node || node.type !== "imageGenerator") return;
     const data = node.data as ImageNodeData;
     if (data.isGeneratedResult) return;
 
@@ -809,14 +976,16 @@ export const useStudio = create<StudioState>((set, get) => ({
     const upstream = state.edges.filter((e) => e.target === nodeId);
     const textParts: string[] = [];
     const refSrcs: string[] = [];
+    let hasUpstreamTextNode = false;
     let upstreamPrimaryImage: AppNode | undefined;
     for (const e of upstream) {
       const src = state.nodes.find((n) => n.id === e.source);
       if (!src) continue;
       if (src.type === "text") {
+        hasUpstreamTextNode = true;
         const t = (src.data as TextNodeData).text.trim();
         if (t) textParts.push(t);
-      } else if (src.type === "image") {
+      } else if (src.type === "imageAsset") {
         const imageData = src.data as ImageNodeData;
         const sources = imageData.urls.length ? imageData.urls : imageData.url ? [imageData.url] : [];
         if (sources.length && !upstreamPrimaryImage) upstreamPrimaryImage = src;
@@ -834,6 +1003,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       : "";
     const ownSources = data.urls.length ? data.urls : data.url ? [data.url] : [];
     const globalSources = [...ownSources, ...refSrcs];
+    const effectiveNodePrompt = hasUpstreamTextNode ? "" : data.prompt.trim();
     let requests: ImageGenerationRequest[];
 
     if (data.combinationEnabled) {
@@ -857,7 +1027,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         get().showToast(`组合数量超过 ${MAX_BATCH_PROMPTS}，请减少分类选项`, "error");
         return;
       }
-      const hasUserPrompt = Boolean(data.prompt.trim() || textParts.length);
+      const hasUserPrompt = Boolean(effectiveNodePrompt || textParts.length);
       if (!hasUserPrompt) {
         get().showToast("请填写组合生图的通用提示词", "error");
         return;
@@ -888,7 +1058,7 @@ export const useStudio = create<StudioState>((set, get) => ({
           return `${groupName} ${optionIndex}`;
         }));
         return {
-          prompt: [...textParts, data.prompt.trim(), mapping, useEditGuide ? localEditInstruction : ""].filter(Boolean).join("\n\n"),
+          prompt: [...textParts, effectiveNodePrompt, mapping, useEditGuide ? localEditInstruction : ""].filter(Boolean).join("\n\n"),
           sources,
           label: labelParts.join(" · "),
         };
@@ -898,13 +1068,15 @@ export const useStudio = create<StudioState>((set, get) => ({
         return;
       }
     } else {
-      const ownPrompts = data.batchPromptEnabled
+      const ownPrompts = hasUpstreamTextNode
+        ? [""]
+        : data.batchPromptEnabled
         ? (Array.isArray(data.batchPrompts) ? data.batchPrompts : [])
             .slice(0, MAX_BATCH_PROMPTS)
             .map((item) => item.trim())
             .filter(Boolean)
         : [data.prompt.trim()];
-      if (data.batchPromptEnabled && !ownPrompts.length) {
+      if (data.batchPromptEnabled && !hasUpstreamTextNode && !ownPrompts.length) {
         get().showToast("请至少填写一套批量提示词", "error");
         return;
       }
@@ -934,7 +1106,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     const sourcePosition = absoluteNodePosition(node, state.nodes);
     const existingResults = state.nodes.filter(
       (candidate) =>
-        candidate.type === "image" && (candidate.data as ImageNodeData).generationSourceId === nodeId,
+        candidate.type === "imageAsset" && (candidate.data as ImageNodeData).generationSourceId === nodeId,
     );
     const nextResultY = existingResults.length
       ? Math.max(...existingResults.map((candidate) => absoluteNodePosition(candidate, state.nodes).y)) + Math.min(sourceHeight, 560) + 110
@@ -950,7 +1122,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       y: nextResultY,
     };
     const startedAt = Date.now();
-    const resultNodeId = get().addNode("image", resultPosition, {
+    const resultNodeId = get().addNode("imageAsset", resultPosition, {
       label: resultLabel,
       url: null,
       urls: [],
@@ -976,8 +1148,8 @@ export const useStudio = create<StudioState>((set, get) => ({
       billing: data.billing,
       quality: data.quality,
       count: data.count,
-      width: sourceWidth,
-      height: sourceHeight,
+      width: 470,
+      height: 470,
       isGeneratedResult: true,
       generationSourceId: nodeId,
       generationReferenceImages,
@@ -1072,7 +1244,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   generateVideo: async (nodeId) => {
     const state = get();
     const node = state.nodes.find((n) => n.id === nodeId);
-    if (!node || node.type !== "video") return;
+    if (!node || node.type !== "videoGenerator") return;
     const data = node.data as VideoNodeData;
     if (data.isGeneratedResult) return;
 
@@ -1087,7 +1259,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (source?.type === "text") {
         const text = (source.data as TextNodeData).text.trim();
         if (text) upstreamTextParts.push(text);
-      } else if (source?.type === "image") {
+      } else if (source?.type === "imageAsset") {
         const image = source.data as ImageNodeData;
         const src = image.urls?.[image.activeIndex ?? 0] ?? image.url;
         if (!src || seenUpstreamImages.has(src)) continue;
@@ -1098,7 +1270,7 @@ export const useStudio = create<StudioState>((set, get) => ({
           name: `${image.label || "画布参考图"}.png`,
           url: src,
         });
-      } else if (source?.type === "video") {
+      } else if (source?.type === "videoAsset") {
         const video = source.data as VideoNodeData;
         if (video.sourceVideo) {
           upstreamVideoAssets.push({
@@ -1222,16 +1394,16 @@ export const useStudio = create<StudioState>((set, get) => ({
         }
       }
       const audioMode = data.audioMode ?? (data.keepOriginalSound ? "original" : data.sound ? "native" : "off");
-      if (referenceVideos.length && data.referType !== "base" && audioMode !== "off") {
-        get().showToast("视频参考（feature）模式必须关闭音频", "error");
+      if (referenceVideos.length && data.referType !== "base" && audioMode === "native") {
+        get().showToast("视频参考（feature）模式不能生成原生音频，请选择保留原声或关闭声音", "error");
         return;
       }
       if (referenceVideos.length && data.referType === "base" && audioMode === "native") {
         get().showToast("视频编辑（base）模式只能关闭音频或保留原声", "error");
         return;
       }
-      if ((!referenceVideos.length || data.referType !== "base") && audioMode === "original") {
-        get().showToast("只有视频编辑（base）模式可以保留原声", "error");
+      if (!referenceVideos.length && audioMode === "original") {
+        get().showToast("没有参考视频时不能保留原声", "error");
         return;
       }
       if (!firstFrameAsset && !referenceVideos.length && data.aspectRatio === "智能") {
@@ -1255,13 +1427,13 @@ export const useStudio = create<StudioState>((set, get) => ({
     const sourceHeight = data.height || 280;
     const existingResults = state.nodes.filter(
       (candidate) =>
-        candidate.type === "video" && (candidate.data as VideoNodeData).generationSourceId === nodeId,
+        candidate.type === "videoAsset" && (candidate.data as VideoNodeData).generationSourceId === nodeId,
     );
     const nextResultY = existingResults.length
       ? Math.max(...existingResults.map((candidate) => absoluteNodePosition(candidate, state.nodes).y)) + Math.min(sourceHeight, 560) + 110
       : sourcePosition.y;
     const startedAt = Date.now();
-    const resultNodeId = get().addNode("video", {
+    const resultNodeId = get().addNode("videoAsset", {
       x: sourcePosition.x + sourceWidth + 180,
       y: nextResultY,
     }, {
@@ -1405,7 +1577,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     let imageSrc: string | null = null;
     for (const e of upstream) {
       const src = state.nodes.find((n) => n.id === e.source);
-      if (src?.type === "image" && (src.data as ImageNodeData).url) {
+      if (src?.type === "imageAsset" && (src.data as ImageNodeData).url) {
         imageSrc = (src.data as ImageNodeData).url;
         break;
       }
@@ -1442,12 +1614,13 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (file && Array.isArray(file.boards) && file.boards.length) {
         const boardsData: Record<string, BoardSnapshot> = {};
         for (const b of file.boards) {
-          const rawNodes = (b.nodes as AppNode[]) ?? [];
+          const migrated = migrateLegacyBoard((b.nodes as AppNode[]) ?? [], (b.edges as Edge[]) ?? []);
+          const rawNodes = migrated.nodes;
           const groupIds = new Set(rawNodes.filter((node) => node.type === "group").map((node) => node.id));
           const interruptedResultIds = new Set(
             rawNodes
               .filter((node) => {
-                if (node.type !== "image") return false;
+                if (node.type !== "imageAsset") return false;
                 const data = node.data as ImageNodeData;
                 return data.isGeneratedResult && data.status === "running" && !data.jobIds?.length;
               })
@@ -1457,18 +1630,28 @@ export const useStudio = create<StudioState>((set, get) => ({
             const layoutIndependentNode = node.parentId && groupIds.has(node.parentId)
               ? ({ ...node, extent: undefined, expandParent: undefined } as AppNode)
               : node;
-            if (!interruptedResultIds.has(node.id)) return layoutIndependentNode;
+            const normalizedNode = layoutIndependentNode.type === "imageGenerator"
+              ? ({
+                  ...layoutIndependentNode,
+                  data: {
+                    ...layoutIndependentNode.data,
+                    width: Number(layoutIndependentNode.data.width) || 420,
+                    height: Math.max(520, Number(layoutIndependentNode.data.height) || 520),
+                  },
+                } as AppNode)
+              : layoutIndependentNode;
+            if (!interruptedResultIds.has(node.id)) return normalizedNode;
             return {
-              ...layoutIndependentNode,
+              ...normalizedNode,
               data: {
-                ...layoutIndependentNode.data,
+                ...normalizedNode.data,
                 status: "failed",
                 progress: 0,
                 error: "提交过程被中断，请从原节点重新生成。",
               },
             } as AppNode;
           });
-          const edges = ((b.edges as Edge[]) ?? []).map((edge) =>
+          const edges = migrated.edges.map((edge) =>
             interruptedResultIds.has(edge.target) && edge.data?.generation === true
               ? {
                   ...edge,
@@ -1480,7 +1663,25 @@ export const useStudio = create<StudioState>((set, get) => ({
           boardsData[b.id] = {
             nodes,
             edges,
-            counters: b.counters ?? {},
+            counters: {
+              ...(b.counters ?? {}),
+              imageAsset: Math.max(
+                Number(b.counters?.imageAsset ?? 0),
+                nodes.filter((node) => node.type === "imageAsset").length,
+              ),
+              imageGenerator: Math.max(
+                Number(b.counters?.imageGenerator ?? 0),
+                nodes.filter((node) => node.type === "imageGenerator").length,
+              ),
+              videoAsset: Math.max(
+                Number(b.counters?.videoAsset ?? 0),
+                nodes.filter((node) => node.type === "videoAsset").length,
+              ),
+              videoGenerator: Math.max(
+                Number(b.counters?.videoGenerator ?? 0),
+                nodes.filter((node) => node.type === "videoGenerator").length,
+              ),
+            },
           };
         }
         const activeId = file.boards.some((b) => b.id === file.activeId) ? file.activeId : file.boards[0].id;
@@ -1498,12 +1699,12 @@ export const useStudio = create<StudioState>((set, get) => ({
         });
         // Resume any generation that was mid-flight when the page closed.
         for (const n of active.nodes) {
-          if (n.type === "image") {
+          if (n.type === "imageAsset") {
             const d = n.data as ImageNodeData;
             if (d.status === "running" && d.jobIds?.length) {
               pollImageNode(n.id, d.jobIds, set, get, d.submissionFailures ?? 0, d.jobLabels);
             }
-          } else if (n.type === "video") {
+          } else if (n.type === "videoAsset") {
             const d = n.data as VideoNodeData;
             if (d.status === "running" && d.taskId) pollVideoNode(n.id, d.taskId, d.prompt, set, get);
           }
@@ -1626,12 +1827,12 @@ function patchNode(get: GetFn, nodeId: string, patch: Record<string, unknown>) {
 
 function imageResultIsRunning(nodeId: string, get: GetFn): boolean {
   const node = get().nodes.find((candidate) => candidate.id === nodeId);
-  return node?.type === "image" && (node.data as ImageNodeData).status === "running";
+  return node?.type === "imageAsset" && (node.data as ImageNodeData).status === "running";
 }
 
 function videoResultIsRunning(nodeId: string, get: GetFn): boolean {
   const node = get().nodes.find((candidate) => candidate.id === nodeId);
-  return node?.type === "video" && (node.data as VideoNodeData).status === "running";
+  return node?.type === "videoAsset" && (node.data as VideoNodeData).status === "running";
 }
 
 function settleGenerationEdge(
@@ -1752,7 +1953,9 @@ function pollVideoNode(nodeId: string, taskId: string, prompt: string, set: SetF
       billing?: VideoNodeData["billing"];
     };
     try {
-      const statusRes = await fetch(`/api/video/jobs/${encodeURIComponent(taskId)}`);
+      const currentNode = get().nodes.find((node) => node.id === nodeId);
+      const currentModel = (currentNode?.data as VideoNodeData | undefined)?.model;
+      const statusRes = await fetch(`/api/video/jobs/${encodeURIComponent(taskId)}?model=${encodeURIComponent(currentModel ?? "")}`);
       const statusPayload = (await statusRes.json().catch(() => ({}))) as {
         status?: string;
         progress?: number;

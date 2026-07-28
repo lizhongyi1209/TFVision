@@ -7,6 +7,7 @@ import {
   buildKlingOmniGenerationBody,
   buildSeedanceGenerationBody,
   supportsShots,
+  videoStatusEndpoint,
 } from "../videoGateway.ts";
 import type { VideoJobParams } from "../types.ts";
 
@@ -27,6 +28,12 @@ test("视频模型映射和分辨率保持 TVision 契约", () => {
   assert.equal(VIDEO_MODEL_IDS["seedance-2.0"], "seedance-2.0");
   assert.deepEqual(allowedVideoResolutions("seedance-2.0"), ["720p", "1080p", "4K"]);
   assert.deepEqual(allowedVideoResolutions("seedance-2.0-fast"), ["720p"]);
+});
+
+test("各视频模型仅使用服务器指定的轮询地址", () => {
+  assert.equal(videoStatusEndpoint("v3-omni", "task/123"), "/kling/omni-video/kling-3.0-omni/task%2F123");
+  assert.equal(videoStatusEndpoint("seedance-2.0", "task-2"), "/v1/video/generations/task-2");
+  assert.equal(videoStatusEndpoint("v3", "task-3"), "/kling/v1/videos/image2video/task-3");
 });
 
 test("可灵 Omni 与 Seedance 使用不同画面比例白名单", () => {
@@ -124,6 +131,14 @@ test("可灵 Omni 分镜编码、视频音频约束和必填比例符合最新�
   assert.equal((featureBody.settings as Record<string, unknown>).multi_shot, true);
   assert.equal((featureBody.settings as Record<string, unknown>).aspect_ratio, undefined);
 
+  const featureOriginalBody = buildKlingOmniGenerationBody(params({
+    model: "v3-omni",
+    aspectRatio: "智能",
+    audioMode: "original",
+    videoUrls: ["https://cdn.example.com/motion.mp4"],
+  }));
+  assert.equal((featureOriginalBody.settings as Record<string, unknown>).audio, "original");
+
   const baseBody = buildKlingOmniGenerationBody(params({
     model: "v3-omni",
     aspectRatio: "智能",
@@ -149,7 +164,7 @@ test("可灵 Omni 分镜编码、视频音频约束和必填比例符合最新�
       audioMode: "native",
       videoUrls: ["https://cdn.example.com/motion.mp4"],
     })),
-    /音频只能关闭/,
+    /不能生成原生音频/,
   );
 });
 

@@ -17,6 +17,8 @@ type ImeSafeTextareaProps = Omit<
 > & {
   value: string;
   onValueChange: (value: string) => void;
+  /** Mirrors the local IME draft for visual overlays without committing it to the store. */
+  onDraftValueChange?: (value: string) => void;
 };
 
 /**
@@ -25,7 +27,7 @@ type ImeSafeTextareaProps = Omit<
  * committed punctuation to be inserted twice or the composition to be reset.
  */
 export const ImeSafeTextarea = forwardRef<HTMLTextAreaElement, ImeSafeTextareaProps>(
-  function ImeSafeTextarea({ value, onValueChange, onFocus, onBlur, onKeyDown, ...props }, forwardedRef) {
+  function ImeSafeTextarea({ value, onValueChange, onDraftValueChange, onFocus, onBlur, onKeyDown, ...props }, forwardedRef) {
     const [draft, setDraft] = useState(value);
     const composingRef = useRef(false);
     const focusedRef = useRef(false);
@@ -50,8 +52,9 @@ export const ImeSafeTextarea = forwardRef<HTMLTextAreaElement, ImeSafeTextareaPr
       composingRef.current = false;
       const next = event.currentTarget.value;
       setDraft(next);
+      onDraftValueChange?.(next);
       commit(next);
-    }, [commit]);
+    }, [commit, onDraftValueChange]);
 
     return (
       <textarea
@@ -62,6 +65,7 @@ export const ImeSafeTextarea = forwardRef<HTMLTextAreaElement, ImeSafeTextareaPr
           const next = event.currentTarget.value;
           const nativeEvent = event.nativeEvent as InputEvent;
           setDraft(next);
+          onDraftValueChange?.(next);
           if (!composingRef.current && !nativeEvent.isComposing) commit(next);
         }}
         onCompositionStart={() => {
@@ -76,6 +80,7 @@ export const ImeSafeTextarea = forwardRef<HTMLTextAreaElement, ImeSafeTextareaPr
           composingRef.current = false;
           const next = event.currentTarget.value;
           setDraft(next);
+          onDraftValueChange?.(next);
           commit(next);
           focusedRef.current = false;
           onBlur?.(event);

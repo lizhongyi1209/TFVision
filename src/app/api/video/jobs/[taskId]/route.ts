@@ -1,10 +1,9 @@
-// 视频任务轮询：优先使用可灵 3.0 Omni 的 /tasks?task_ids= 协议，
-// 再兼容 Seedance 与旧可灵端点，返回归一化任务状态和结果元数据。
+// 视频任务轮询：每个模型只调用服务器指定的任务端点，不做跨协议回退。
 
 import { NextResponse } from "next/server";
 import { readSettings } from "@/lib/settings";
 import { resolveBaseUrl } from "@/lib/o1key";
-import { extractGeneratedVideoUrl } from "@/lib/videoGateway";
+import { extractGeneratedVideoUrl, isVideoModel, videoStatusEndpoint } from "@/lib/videoGateway";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -113,60 +112,50 @@ function extractError(p: unknown): string {
   return "未知错误";
 }
 
-export async function GET(_req: Request, ctx: { params: Promise<{ taskId: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ taskId: string }> }) {
   const { taskId } = await ctx.params;
   const s = await readSettings();
   if (!s.apiKey) return NextResponse.json({ error: "未设置 API 令牌" }, { status: 400 });
 
+  const requestedModel = new URL(req.url).searchParams.get("model") ?? "";
+  if (!isVideoModel(requestedModel)) {
+    return NextResponse.json({ error: "状态查询缺少有效的视频模型" }, { status: 400 });
+  }
+
   const baseUrl = resolveBaseUrl(s.route);
   const headers = { Authorization: `Bearer ${s.apiKey}` };
 
-  const endpoints = [
-    `/tasks?task_ids=${encodeURIComponent(taskId)}`,
-    `/v1/video/generations/${encodeURIComponent(taskId)}`,
-    `/v1/tasks/${encodeURIComponent(taskId)}`,
-    `/kling/v1/videos/image2video/${encodeURIComponent(taskId)}`,
-    `/kling/v1/videos/omni-video/${encodeURIComponent(taskId)}`,
-  ];
+  const endpoint = videoStatusEndpoint(requestedModel, taskId);
+  const requestedUrl = `${baseUrl}${endpoint}`;
 
-  let payload: unknown = null;
-  let retryableFailure = false;
-  let terminalError = "";
-  for (const ep of endpoints) {
-    let res: Response;
-    try {
-      res = await fetch(`${baseUrl}${ep}`, { headers, signal: AbortSignal.timeout(15_000) });
-    } catch {
-      retryableFailure = true;
-      continue;
-    }
-    if (res.status === 200) {
-      const text = await res.text();
-      try {
-        const candidate = JSON.parse(text);
-        const candidateStatus = extractStatus(candidate);
-        const candidateError = extractError(candidate);
-        const notFound = /not\s*found|not\s*exist|不存在|未找到/i.test(candidateError);
-        if ((candidateStatus || extractGeneratedVideoUrl(candidate)) && !notFound) payload = candidate;
-        else if (!notFound) terminalError = candidateError;
-      } catch {
-        retryableFailure = true;
-      }
-      if (payload) break;
-      continue;
-    }
-    if (res.status === 404 || res.status === 405) continue;
-    if (res.status === 429 || res.status >= 500) {
-      retryableFailure = true;
-      continue;
-    }
-    const text = await res.text().catch(() => "");
-    terminalError = `状态查询失败 HTTP ${res.status}${text ? `: ${text.slice(0, 160)}` : ""}`;
+  let response: Response;
+  try {
+    response = await fetch(requestedUrl, { headers, signal: AbortSignal.timeout(15_000) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "网络连接失败";
+    return NextResponse.json({ status: "running", progress: 0, error: `状态查询暂时失败：${message}` });
+  }
+  const responseText = await response.text().catch(() => "");
+  if (response.status === 429 || response.status >= 500) {
+    return NextResponse.json({ status: "running", progress: 0 });
+  }
+  if (!response.ok) {
+    return NextResponse.json({
+      status: "failed",
+      progress: 0,
+      error: `状态查询失败 HTTP ${response.status}${responseText ? `：${responseText.slice(0, 500)}` : ""}`,
+    });
   }
 
-  if (!payload) {
-    if (retryableFailure) return NextResponse.json({ status: "running", progress: 0 });
-    return NextResponse.json({ status: "failed", progress: 0, error: terminalError || "状态查询失败" });
+  let payload: unknown;
+  try {
+    payload = JSON.parse(responseText);
+  } catch {
+    return NextResponse.json({
+      status: "failed",
+      progress: 0,
+      error: `状态接口返回了非 JSON 内容。请求地址：${requestedUrl}\n响应内容：${responseText.slice(0, 500) || "（空）"}`,
+    });
   }
 
   const rawStatus = extractStatus(payload);

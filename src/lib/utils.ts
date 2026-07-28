@@ -10,6 +10,51 @@ export function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * Fit a media surface to its native aspect ratio without letting the longest
+ * side dominate the canvas. Used by both image and video asset nodes.
+ */
+export function fitMediaNodeSize(width: number, height: number, maxSide = 520) {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return { width: maxSide, height: maxSide };
+  }
+  const scale = maxSide / Math.max(width, height);
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  };
+}
+
+export type NodeResizePolicy = {
+  mode: "free" | "preserve-aspect";
+  aspectRatio?: number;
+  minWidth?: number;
+  minHeight?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+};
+
+/**
+ * Shared media-node sizing contract. Image, video, and future single-media
+ * nodes use the same native-ratio resize behavior; only their initial visual
+ * scale needs to differ.
+ */
+export function createMediaNodeSizing(width: number, height: number, initialMaxSide = 520) {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  const initialSize = fitMediaNodeSize(width, height, initialMaxSide);
+  return {
+    initialSize,
+    resizePolicy: {
+      mode: "preserve-aspect",
+      aspectRatio: width / height,
+      minWidth: initialSize.width,
+      minHeight: initialSize.height,
+      maxWidth: 1200,
+      maxHeight: 1200,
+    } satisfies NodeResizePolicy,
+  };
+}
+
 /** Read a file/blob as-is into a data URL — no re-encoding. Browser-only. */
 export function fileToDataURL(file: File | Blob): Promise<string> {
   return new Promise((resolve, reject) => {

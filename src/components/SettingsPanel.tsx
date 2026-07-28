@@ -38,7 +38,7 @@ export function SettingsPanel() {
         body: JSON.stringify(key.trim() ? { apiKey: key.trim() } : {}),
       });
       const payload = (await res.json()) as { ok: boolean; message: string };
-      setTestMsg({ ok: payload.ok, msg: payload.message });
+      setTestMsg({ ok: payload.ok, msg: payload.ok ? "测试成功" : payload.message });
     } catch {
       setTestMsg({ ok: false, msg: "测试请求失败，请检查本地服务" });
     } finally {

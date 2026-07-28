@@ -29,7 +29,7 @@ import {
   modelLabel,
   resolutionsFor,
 } from "@/lib/models";
-import { cn, fileToDataURL, progressStageLabel } from "@/lib/utils";
+import { cn, createMediaNodeSizing, fileToDataURL, fitMediaNodeSize, progressStageLabel } from "@/lib/utils";
 import { Icon } from "../icons";
 import { BrushEditor, CropEditor, ImageCompareViewer, StickerEditor, type ImageCompareCandidate } from "../ImageEditors";
 import { NodeShell, RunningVeil } from "./NodeShell";
@@ -48,7 +48,7 @@ function canvasImageCompareCandidates(
   const candidates: ImageCompareCandidate[] = [];
   const seenSources = new Set(excludedSources);
   for (const node of nodes) {
-    if (node.type !== "image" || excludedNodeIds.has(node.id)) continue;
+    if (node.type !== "imageAsset" || excludedNodeIds.has(node.id)) continue;
     const data = node.data as ImageNodeData;
     const sources = data.urls.length ? data.urls : data.url ? [data.url] : [];
     for (let index = 0; index < sources.length; index += 1) {
@@ -71,6 +71,8 @@ const isMultiSelectClick = (event: Pick<React.MouseEvent, "ctrlKey" | "metaKey" 
 
 const PROMPT_MIN_HEIGHT = 60;
 const PROMPT_MAX_HEIGHT = 240;
+const IMAGE_GENERATOR_HEADER_HEIGHT = 94;
+const IMAGE_GENERATOR_MIN_HEIGHT = 520;
 const DEFAULT_BATCH_PROMPT_COUNT = 4;
 const IMAGE_COUNT_OPTIONS = Array.from({ length: 9 }, (_, index) => index + 1);
 
@@ -528,10 +530,12 @@ function ModelPopover({ data, nodeId, onClose }: { data: ImageNodeData; nodeId: 
 function GeneratedImageResult({
   id,
   selected,
+  dragging,
   data,
 }: {
   id: string;
   selected?: boolean;
+  dragging?: boolean;
   data: ImageNodeData;
 }) {
   const cancelImageGeneration = useStudio((s) => s.cancelImageGeneration);
@@ -539,9 +543,11 @@ function GeneratedImageResult({
   const showToast = useStudio((s) => s.showToast);
   const nodes = useStudio((s) => s.nodes);
   const [focusedResultIndex, setFocusedResultIndex] = useState<number | null>(null);
-  const [resultActionsVisible, setResultActionsVisible] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
   const [amazonPanelOpen, setAmazonPanelOpen] = useState(false);
+  const [editor, setEditor] = useState<"none" | "crop" | "sticker" | "brush">("none");
+  const [stickerSrc, setStickerSrc] = useState<string | null>(null);
+  const stickerFileRef = useRef<HTMLInputElement>(null);
   const { zoom: canvasZoom } = useViewport();
   const nodeWidth = data.width || 470;
   const nodeHeight = data.height ?? nodeWidth;
@@ -550,8 +556,15 @@ function GeneratedImageResult({
   const focusedResultUrl = focusedResultIndex === null ? null : urls[focusedResultIndex] ?? null;
   const running = data.status === "running";
   const activeResultIndex = focusedResultIndex ?? Math.max(0, Math.min(urls.length - 1, data.activeIndex ?? 0));
+  const activeResultUrl = urls[activeResultIndex] ?? null;
+  const hasActiveEditMask = Boolean(data.editGuide && data.editMask && data.editMaskImageIndex === activeResultIndex);
+  const activeResultPreviewUrl = hasActiveEditMask ? data.editGuide ?? activeResultUrl : activeResultUrl;
+  const mediaSizing = data.mediaWidth && data.mediaHeight
+    ? createMediaNodeSizing(data.mediaWidth, data.mediaHeight, 470)
+    : null;
+  const fittedMediaSize = mediaSizing?.initialSize ?? null;
   const sourceNode = data.generationSourceId
-    ? nodes.find((node) => node.id === data.generationSourceId && node.type === "image")
+    ? nodes.find((node) => node.id === data.generationSourceId && node.type === "imageGenerator")
     : undefined;
   const sourceData = sourceNode?.data as ImageNodeData | undefined;
   const sourceUrls = sourceData?.urls.length ? sourceData.urls : sourceData?.url ? [sourceData.url] : [];
@@ -576,9 +589,15 @@ function GeneratedImageResult({
   const initialSourceCandidateId = sourceCandidates[0]?.id;
   const recordResultSize = useCallback((image: HTMLImageElement) => {
     if (!image.naturalWidth || !image.naturalHeight) return;
-    if (data.mediaWidth === image.naturalWidth && data.mediaHeight === image.naturalHeight) return;
-    updateNode(id, { mediaWidth: image.naturalWidth, mediaHeight: image.naturalHeight });
-  }, [data.mediaHeight, data.mediaWidth, id, updateNode]);
+    const shouldFitLayout = !data.mediaLayoutFitted && urls.length === 1;
+    if (data.mediaWidth === image.naturalWidth && data.mediaHeight === image.naturalHeight && !shouldFitLayout) return;
+    const fitted = fitMediaNodeSize(image.naturalWidth, image.naturalHeight, 470);
+    updateNode(id, {
+      mediaWidth: image.naturalWidth,
+      mediaHeight: image.naturalHeight,
+      ...(shouldFitLayout ? { ...fitted, mediaLayoutFitted: true } : {}),
+    });
+  }, [data.mediaHeight, data.mediaLayoutFitted, data.mediaWidth, id, updateNode, urls.length]);
 
   const selectResultNode = useCallback(() => {
     useStudio.setState((state) => ({
@@ -600,7 +619,6 @@ function GeneratedImageResult({
 
   useEffect(() => {
     if (!selected) {
-      setResultActionsVisible(false);
       setAmazonPanelOpen(false);
     }
   }, [selected]);
@@ -611,10 +629,45 @@ function GeneratedImageResult({
     updateNode(id, { amazonAiDisclosure: { taggedIndices: [...next].sort((a, b) => a - b), updatedAt: Date.now() } });
   };
 
+  const replaceActiveImage = (nextUrl: string) => {
+    if (!activeResultUrl) return;
+    const nextUrls = urls.map((url, index) => index === activeResultIndex ? nextUrl : url);
+    const taggedIndices = (data.amazonAiDisclosure?.taggedIndices ?? []).filter((index) => index !== activeResultIndex);
+    updateNode(id, {
+      urls: nextUrls,
+      url: nextUrls[data.activeIndex ?? 0] ?? nextUrls[0],
+      mediaWidth: undefined,
+      mediaHeight: undefined,
+      mediaLayoutFitted: false,
+      editMask: undefined,
+      editGuide: undefined,
+      editMaskImageIndex: undefined,
+      amazonAiDisclosure: taggedIndices.length ? { taggedIndices, updatedAt: Date.now() } : undefined,
+    });
+    setEditor("none");
+    setStickerSrc(null);
+    showToast("图片已更新", "success");
+  };
+
+  const quickToolbar = activeResultUrl && !running ? (
+    <div className="flex w-max flex-nowrap items-center gap-1 whitespace-nowrap rounded-full border border-line bg-panel/95 p-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.38)] backdrop-blur-xl">
+      <button type="button" onClick={() => setEditor("crop")} className="flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] text-fg-dim hover:bg-white/[0.07] hover:text-fg"><Icon name="Scissors" size={12} />裁剪</button>
+      <span className="h-4 border-l border-line" />
+      <button type="button" onClick={() => stickerFileRef.current?.click()} className="flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] text-fg-dim hover:bg-white/[0.07] hover:text-fg"><Icon name="Stack" size={12} />贴图</button>
+      <span className="h-4 border-l border-line" />
+      <button type="button" onClick={() => setEditor("brush")} className={cn("flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] hover:bg-white/[0.07] hover:text-fg", hasActiveEditMask ? "text-[#ff8a72]" : "text-fg-dim")}><Icon name="PaintBrush" size={12} />画笔</button>
+      <span className="h-4 border-l border-line" />
+      <button type="button" onClick={openResultCompare} className="flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] text-fg-dim hover:bg-white/[0.07] hover:text-fg"><Icon name="Swap" size={12} />对比</button>
+      <span className="h-4 border-l border-line" />
+      <button type="button" onClick={() => setAmazonPanelOpen((current) => !current)} className={cn("flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] hover:bg-white/[0.07] hover:text-fg", amazonPanelOpen ? "bg-white/[0.07] text-fg" : "text-fg-dim")}><Icon name="SealCheck" size={12} />亚马逊合规</button>
+    </div>
+  ) : undefined;
+
   return (
     <NodeShell
       id={id}
       selected={selected}
+      dragging={dragging}
       label={data.label}
       icon="Sparkle"
       width={nodeWidth}
@@ -623,14 +676,17 @@ function GeneratedImageResult({
       headerMeta={data.mediaWidth && data.mediaHeight ? `${data.mediaWidth} × ${data.mediaHeight}` : undefined}
       showHeaderActions={false}
       frameless
-      portTop={nodeHeight / 2}
-      resizeHandleTop={Math.max(8, nodeHeight - 32)}
+      portTop="50%"
+      resizeHandleOutside
+      toolbar={selected && !dragging ? quickToolbar : undefined}
+      resizePolicy={mediaSizing?.resizePolicy}
     >
       <div
         data-body
         style={{ height: nodeHeight }}
         className={cn(
-          "tf-result-node-enter relative flex min-h-[264px] items-center justify-center overflow-hidden rounded-[12px] border bg-panel transition-[border-color,box-shadow] duration-200",
+          "tf-result-node-enter relative flex items-center justify-center overflow-hidden rounded-[12px] border bg-panel transition-[border-color,box-shadow] duration-200",
+          fittedMediaSize ? "min-h-0" : "min-h-[264px]",
           selected
             ? "border-white/30 shadow-[0_18px_50px_rgba(0,0,0,0.3)]"
             : "border-line hover:border-line-2",
@@ -679,13 +735,12 @@ function GeneratedImageResult({
             {focusedResultUrl ? (
               <>
                 <img
-                  src={focusedResultUrl}
+                  src={activeResultPreviewUrl ?? focusedResultUrl}
                   alt={`生成结果 ${focusedResultIndex! + 1}`}
                   onLoad={(event) => recordResultSize(event.currentTarget)}
                   onClick={(event) => {
                     event.stopPropagation();
                     selectResultNode();
-                    setResultActionsVisible((current) => !current);
                   }}
                   className="h-full w-full cursor-pointer object-contain"
                   draggable={false}
@@ -707,13 +762,12 @@ function GeneratedImageResult({
             ) : urls.length === 1 ? (
               <>
                 <img
-                  src={urls[0]}
+                  src={activeResultIndex === 0 ? activeResultPreviewUrl ?? urls[0] : urls[0]}
                   alt="生成结果"
                   onLoad={(event) => recordResultSize(event.currentTarget)}
                   onClick={(event) => {
                     event.stopPropagation();
                     selectResultNode();
-                    setResultActionsVisible((current) => !current);
                   }}
                   className="h-full w-full cursor-pointer object-contain"
                   draggable={false}
@@ -740,7 +794,6 @@ function GeneratedImageResult({
                       event.stopPropagation();
                       selectResultNode();
                       setFocusedResultIndex(index);
-                      setResultActionsVisible(true);
                     }}
                     className="nodrag group/result relative aspect-square min-h-0 overflow-hidden rounded-[8px] border border-transparent bg-ink text-left transition-[border-color,transform,box-shadow] duration-200 hover:z-[1] hover:scale-[1.012] hover:border-white/20 hover:shadow-[0_10px_28px_rgba(0,0,0,.35)] focus-visible:border-white/35 focus-visible:outline-none"
                   >
@@ -757,48 +810,6 @@ function GeneratedImageResult({
                 ))}
               </div>
             )}
-            {resultActionsVisible && (focusedResultUrl || urls.length === 1) ? (
-              <div className="nodrag absolute right-3 top-3 z-20 flex items-center rounded-full border border-white/14 bg-ink/82 p-1 shadow-[0_10px_30px_rgba(0,0,0,.42)] backdrop-blur-xl">
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    openResultCompare();
-                  }}
-                  className="flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] text-fg-dim transition-colors hover:bg-white/[0.08] hover:text-fg"
-                >
-                  <Icon name="Swap" size={12} />
-                  对比
-                </button>
-                <span className="h-4 border-l border-white/10" />
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    selectResultNode();
-                    setAmazonPanelOpen((current) => !current);
-                  }}
-                  className={cn(
-                    "flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] transition-colors hover:bg-white/[0.08] hover:text-fg",
-                    amazonPanelOpen ? "bg-white/[0.08] text-fg" : "text-fg-dim",
-                  )}
-                >
-                  <Icon name="SealCheck" size={12} />
-                  亚马逊合规
-                </button>
-                {amazonPanelOpen ? (
-                  <AmazonAiMetadataPanel
-                    images={urls.map((src, index) => ({ index, src, label: resultLabels[index] || `生成结果 ${index + 1}` }))}
-                    initialIndices={urls.length > 1 && focusedResultIndex === null ? urls.map((_, index) => index) : [activeResultIndex]}
-                    taggedIndices={data.amazonAiDisclosure?.taggedIndices ?? []}
-                    nodeLabel={data.label}
-                    canvasZoom={canvasZoom}
-                    onClose={() => setAmazonPanelOpen(false)}
-                    onVerified={markAmazonMetadataVerified}
-                  />
-                ) : null}
-              </div>
-            ) : null}
           </>
         ) : (
           <div className="flex max-w-[78%] flex-col items-center text-center">
@@ -819,6 +830,64 @@ function GeneratedImageResult({
           </div>
         )}
       </div>
+      <input
+        ref={stickerFileRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.currentTarget.value = "";
+          if (!file || !isImageFile(file)) return;
+          void fileToDataURL(file)
+            .then((url) => {
+              setStickerSrc(url);
+              setEditor("sticker");
+            })
+            .catch(() => showToast("贴图读取失败", "error"));
+        }}
+      />
+      {editor === "crop" && activeResultUrl ? (
+        <CropEditor src={activeResultUrl} onClose={() => setEditor("none")} onApply={replaceActiveImage} />
+      ) : null}
+      {editor === "sticker" && activeResultUrl && stickerSrc ? (
+        <StickerEditor
+          baseSrc={activeResultUrl}
+          stickerSrc={stickerSrc}
+          onClose={() => {
+            setEditor("none");
+            setStickerSrc(null);
+          }}
+          onApply={replaceActiveImage}
+        />
+      ) : null}
+      {editor === "brush" && activeResultUrl ? (
+        <BrushEditor
+          src={activeResultUrl}
+          hasExistingMask={hasActiveEditMask}
+          onClose={() => setEditor("none")}
+          onApply={({ mask, guide }) => {
+            updateNode(id, { editMask: mask, editGuide: guide, editMaskImageIndex: activeResultIndex });
+            setEditor("none");
+            showToast("局部编辑范围已保存", "success");
+          }}
+          onRemoveMask={() => {
+            updateNode(id, { editMask: undefined, editGuide: undefined, editMaskImageIndex: undefined });
+            setEditor("none");
+          }}
+        />
+      ) : null}
+      {amazonPanelOpen ? (
+        <AmazonAiMetadataPanel
+          images={urls.map((src, index) => ({ index, src, label: resultLabels[index] || `生成结果 ${index + 1}` }))}
+          initialIndices={urls.length > 1 && focusedResultIndex === null ? urls.map((_, index) => index) : [activeResultIndex]}
+          taggedIndices={data.amazonAiDisclosure?.taggedIndices ?? []}
+          nodeLabel={data.label}
+          canvasZoom={canvasZoom}
+          onClose={() => setAmazonPanelOpen(false)}
+          onVerified={markAmazonMetadataVerified}
+        />
+      ) : null}
       {compareOpen && compareCandidates.length >= 2 ? (
         <ImageCompareViewer
           images={compareCandidates}
@@ -831,8 +900,10 @@ function GeneratedImageResult({
   );
 }
 
-export const ImageNode = memo(function ImageNode({ id, selected, dragging, data }: NodeProps<AppNode>) {
+export const ImageNode = memo(function ImageNode({ id, type, selected, dragging, data }: NodeProps<AppNode>) {
   const d = data as ImageNodeData;
+  const generatorOnly = type === "imageGenerator";
+  const assetOnly = type === "imageAsset";
   const ownImageUrls = d.urls.length ? d.urls : d.url ? [d.url] : [];
   const updateNode = useStudio((s) => s.updateNode);
   const generateImage = useStudio((s) => s.generateImage);
@@ -852,7 +923,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   const [popover, setPopover] = useState<"none" | "params" | "model">("none");
   const [fileDragActive, setFileDragActive] = useState(false);
   const [focusedImageIndex, setFocusedImageIndex] = useState<number | null>(null);
-  const [composerOpen, setComposerOpen] = useState(false);
+  const [composerOpen, setComposerOpen] = useState(generatorOnly);
   const [editor, setEditor] = useState<"none" | "crop" | "sticker" | "brush">("none");
   const [stickerSrc, setStickerSrc] = useState<string | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -864,9 +935,15 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   const multipleNodesSelected = nodes.reduce((count, node) => count + (node.selected ? 1 : 0), 0) > 1;
   const recordImageSize = useCallback((image: HTMLImageElement) => {
     if (!image.naturalWidth || !image.naturalHeight) return;
-    if (d.mediaWidth === image.naturalWidth && d.mediaHeight === image.naturalHeight) return;
-    updateNode(id, { mediaWidth: image.naturalWidth, mediaHeight: image.naturalHeight });
-  }, [d.mediaHeight, d.mediaWidth, id, updateNode]);
+    const shouldFitLayout = assetOnly && ownImageUrls.length === 1 && !d.mediaLayoutFitted;
+    if (d.mediaWidth === image.naturalWidth && d.mediaHeight === image.naturalHeight && !shouldFitLayout) return;
+    const fitted = fitMediaNodeSize(image.naturalWidth, image.naturalHeight, 470);
+    updateNode(id, {
+      mediaWidth: image.naturalWidth,
+      mediaHeight: image.naturalHeight,
+      ...(shouldFitLayout ? { ...fitted, mediaLayoutFitted: true } : {}),
+    });
+  }, [assetOnly, d.mediaHeight, d.mediaLayoutFitted, d.mediaWidth, id, ownImageUrls.length, updateNode]);
 
   const submitGeneration = useCallback(async () => {
     const resultNodeId = await generateImage(id);
@@ -968,16 +1045,21 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   }, [popover]);
 
   useEffect(() => {
-    if (!selected || dragging || multipleNodesSelected) {
+    if ((!selected && !generatorOnly) || dragging || multipleNodesSelected) {
       setPopover("none");
-      setComposerOpen(false);
+      if (!generatorOnly) setComposerOpen(false);
       setAmazonPanelOpen(false);
     }
-  }, [dragging, multipleNodesSelected, selected]);
+  }, [dragging, generatorOnly, multipleNodesSelected, selected]);
 
   useEffect(() => {
     const textarea = promptRef.current;
-    if (!composerOpen || !textarea) return;
+    if ((!composerOpen && !generatorOnly) || !textarea) return;
+
+    if (generatorOnly) {
+      textarea.style.height = "100%";
+      return;
+    }
 
     const rememberMeasurement = () => {
       promptHeightRef.current = resizePromptTextarea(textarea);
@@ -1032,16 +1114,21 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
       promptValueRef.current = textarea.value;
       promptMeasuredRef.current = true;
     };
-  }, [composerOpen, d.prompt, d.promptHeight, id, selected, updateNode]);
+  }, [composerOpen, d.prompt, d.promptHeight, generatorOnly, id, selected, updateNode]);
 
   const running = d.status === "running";
   const linkedRefCount = edges.reduce((count, e) => {
     if (e.target !== id) return count;
     const src = nodes.find((n) => n.id === e.source);
-    if (src?.type !== "image") return count;
+    if (src?.type !== "imageAsset") return count;
     const imageData = src.data as ImageNodeData;
     return count + (imageData.urls.length || (imageData.url ? 1 : 0));
   }, 0);
+  const hasLinkedTextInput = edges.some((edge) => {
+    if (edge.target !== id) return false;
+    const source = nodes.find((node) => node.id === edge.source);
+    return source?.type === "text";
+  });
   const hasLinkedTextPrompt = edges.some((edge) => {
     if (edge.target !== id) return false;
     const source = nodes.find((node) => node.id === edge.source);
@@ -1051,9 +1138,11 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
   const combo = comboError(d.model, d.resolution, d.billing, d.aspectRatio);
   const batchPrompts = d.batchPromptEnabled ? normalizeBatchPrompts(d) : [];
   const filledBatchPromptCount = batchPrompts.filter((prompt) => prompt.trim()).length;
-  const hasPrompt = d.batchPromptEnabled
-    ? filledBatchPromptCount > 0
-    : Boolean(d.prompt.trim() || hasLinkedTextPrompt);
+  const hasPrompt = hasLinkedTextInput
+    ? hasLinkedTextPrompt
+    : d.batchPromptEnabled
+      ? filledBatchPromptCount > 0
+      : Boolean(d.prompt.trim());
   const sendDisabled = Boolean(combo) || !hasPrompt;
   const combinationGroups = d.combinationEnabled && Array.isArray(d.combinationGroups) ? d.combinationGroups : [];
   const totalCombinationCount = combinationCount(combinationGroups, ownImageUrls.length);
@@ -1107,6 +1196,9 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
         activeIndex,
         status: "idle",
         error: undefined,
+        mediaWidth: undefined,
+        mediaHeight: undefined,
+        mediaLayoutFitted: false,
       });
       setFocusedImageIndex(null);
       if (acceptedFiles.length < imageFiles.length) {
@@ -1122,7 +1214,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
     const urls = ownImageUrls.filter((_, imageIndex) => imageIndex !== index);
     if (!urls.length) {
       setFocusedImageIndex(null);
-      updateNode(id, { url: null, urls: [], activeIndex: 0, status: "idle", editMask: undefined, editGuide: undefined, editMaskImageIndex: undefined, amazonAiDisclosure: undefined });
+      updateNode(id, { url: null, urls: [], activeIndex: 0, status: "idle", mediaWidth: undefined, mediaHeight: undefined, mediaLayoutFitted: false, editMask: undefined, editGuide: undefined, editMaskImageIndex: undefined, amazonAiDisclosure: undefined });
       return;
     }
 
@@ -1140,6 +1232,9 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
       urls,
       activeIndex,
       status: "idle",
+      mediaWidth: undefined,
+      mediaHeight: undefined,
+      mediaLayoutFitted: false,
       editMask: undefined,
       editGuide: undefined,
       editMaskImageIndex: undefined,
@@ -1149,7 +1244,7 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
 
   const focusImage = (url: string, index: number) => {
     setFocusedImageIndex(index);
-    setComposerOpen(true);
+    if (generatorOnly) setComposerOpen(true);
     updateNode(id, { url, activeIndex: index });
   };
 
@@ -1164,6 +1259,9 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
       activeIndex: replaceIndex,
       status: "idle",
       error: undefined,
+      mediaWidth: undefined,
+      mediaHeight: undefined,
+      mediaLayoutFitted: false,
       editMask: undefined,
       editGuide: undefined,
       editMaskImageIndex: undefined,
@@ -1250,36 +1348,48 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
     Array.from(dataTransfer.items).some(
       (item) => item.kind === "file" && (!item.type || item.type.startsWith("image/")),
     );
-  const nodeWidth = d.width || 470;
-  const nodeHeight = d.height ?? nodeWidth;
+  const nodeWidth = d.width || (generatorOnly ? 420 : 470);
+  const nodeHeight = generatorOnly
+    ? Math.max(IMAGE_GENERATOR_MIN_HEIGHT, d.height ?? IMAGE_GENERATOR_MIN_HEIGHT)
+    : d.height ?? nodeWidth;
+  const mediaAreaHeight = generatorOnly ? IMAGE_GENERATOR_HEADER_HEIGHT : nodeHeight;
+  const mediaSizing = assetOnly && ownImageUrls.length === 1 && d.mediaWidth && d.mediaHeight
+    ? createMediaNodeSizing(d.mediaWidth, d.mediaHeight, 470)
+    : null;
+  const fittedMediaSize = mediaSizing?.initialSize ?? null;
 
   if (d.isGeneratedResult) {
-    return <GeneratedImageResult id={id} selected={selected} data={d} />;
+    return <GeneratedImageResult id={id} selected={selected} dragging={dragging} data={d} />;
   }
 
   return (
     <NodeShell
       id={id}
       selected={selected}
+      dragging={dragging}
       label={d.label}
       icon="Image"
       width={nodeWidth}
       height={nodeHeight}
       running={running}
       frameless
-      portTop={nodeHeight / 2}
-      resizeHandleTop={Math.max(8, nodeHeight - 32)}
+      portTop="50%"
+      resizeHandleOutside
+      resizePolicy={mediaSizing?.resizePolicy}
       onResizeBegin={() => setComposerOpen(false)}
-      toolbar={selected && !multipleNodesSelected && activeImageUrl && !running ? quickToolbar : undefined}
+      toolbar={assetOnly && selected && !dragging && !multipleNodesSelected && activeImageUrl && !running ? quickToolbar : undefined}
       headerMeta={d.mediaWidth && d.mediaHeight ? `${d.mediaWidth} × ${d.mediaHeight}` : undefined}
       showHeaderActions={false}
     >
       {/* ── Canvas area ── */}
       <div
         data-body
-        style={{ height: nodeHeight }}
+        style={{ height: mediaAreaHeight }}
         className={cn(
-          "relative flex min-h-[264px] items-center justify-center overflow-hidden rounded-[12px] border bg-panel transition-[border-color,box-shadow,transform] duration-200",
+          "relative flex items-center justify-center overflow-hidden border bg-panel transition-[border-color,box-shadow,transform] duration-200",
+          generatorOnly
+            ? "min-h-[94px] rounded-t-[14px] rounded-b-none border-b-transparent bg-[linear-gradient(135deg,rgba(255,255,255,.035),rgba(255,255,255,.012))]"
+            : fittedMediaSize ? "min-h-0 rounded-[12px]" : "min-h-[264px] rounded-[12px]",
           !ownImageUrls.length && !running && "cursor-pointer",
           fileDragActive
             ? "cursor-copy scale-[1.008] border-white/55 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.12),0_18px_50px_rgba(0,0,0,0.38)]"
@@ -1313,10 +1423,10 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
         }}
         onClick={(event) => {
           if (selectionModifierPressed || isMultiSelectClick(event)) return;
-          if (ownImageUrls.length || running || dragging) return;
+          if (generatorOnly || ownImageUrls.length || running || dragging) return;
           const target = event.target as HTMLElement;
           if (target.closest("button, input")) return;
-          setComposerOpen(true);
+          fileRef.current?.click();
         }}
       >
         {fileDragActive ? (
@@ -1333,7 +1443,22 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
           </div>
         ) : null}
 
-        {ownImageUrls.length > 1 && !focusedImageUrl ? (
+        {generatorOnly && !ownImageUrls.length ? (
+          <div className="flex w-full items-center gap-3 px-4 text-left">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border border-white/[0.09] bg-white/[0.035] text-fg-dim">
+              <Icon name="Sparkle" size={18} weight="duotone" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[12px] font-medium text-fg">描述画面并生成图片</span>
+              <span className="mt-1 block truncate text-[10px] text-fg-mute">
+                {hasLinkedTextInput
+                  ? "文本节点已接管提示词输入"
+                  : linkedRefCount ? `已连接 ${linkedRefCount} 张参考图` : "可连接图片素材或文本作为输入"}
+              </span>
+            </span>
+            <span className="rounded-full border border-white/[0.08] px-2 py-1 text-[9px] tracking-wide text-fg-mute">PROCESS</span>
+          </div>
+        ) : ownImageUrls.length > 1 && !focusedImageUrl ? (
           <div
             className="absolute inset-1.5 grid gap-1.5"
             style={{
@@ -1399,9 +1524,9 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
               onLoad={(event) => recordImageSize(event.currentTarget)}
               onClick={(event) => {
                 if (selectionModifierPressed || isMultiSelectClick(event)) return;
-                setComposerOpen(true);
+                if (generatorOnly) setComposerOpen(true);
               }}
-              className="nodrag h-full w-full cursor-pointer object-contain"
+              className={cn("nodrag h-full w-full object-contain", generatorOnly && "cursor-pointer")}
               draggable={false}
             />
             {hasActiveEditMask ? <span className="pointer-events-none absolute bottom-2.5 left-2.5 flex items-center gap-1.5 rounded-full border border-[#ff9a85]/25 bg-[#2a1511]/82 px-2.5 py-1.5 text-[10px] text-[#ffad9c] shadow-[0_8px_24px_rgba(0,0,0,.34)] backdrop-blur-md"><Icon name="PaintBrush" size={10} />局部编辑标记</span> : null}
@@ -1420,18 +1545,8 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
             >
               <Icon name="UploadSimple" size={13} /> 上传参考图 · 可多选
             </button>
-            <button
-              type="button"
-              className="flex items-center gap-2 self-center rounded-control px-2 py-1 transition-colors hover:bg-white/5 hover:text-fg"
-              onClick={(event) => {
-                if (selectionModifierPressed || isMultiSelectClick(event)) return;
-                setComposerOpen(true);
-              }}
-            >
-              <Icon name="TextT" size={13} /> 直接输入文字生成
-            </button>
             <span className="flex items-center gap-2 self-center px-2 py-1">
-              <Icon name="ShareNetwork" size={13} /> 连入图片节点作参考
+              <Icon name="ClockCounterClockwise" size={13} /> 或从历史资产选择
             </span>
           </div>
         )}
@@ -1526,14 +1641,18 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
       </div>
 
       {/* ── Composer ── */}
-      {composerOpen && selected && !dragging && !multipleNodesSelected ? (
+      {(generatorOnly || (composerOpen && selected && !dragging)) && !multipleNodesSelected ? (
         <div
           role="dialog"
           aria-label={ownImageUrls.length ? "图片生成设置" : "文生图设置"}
           className={cn(
-            "relative left-1/2 z-[40] mt-3 -translate-x-1/2 rounded-[18px] border border-line bg-card p-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.24)] nodrag",
-            d.combinationEnabled ? "w-[calc(100%+360px)]" : "w-[calc(100%+192px)]",
+            "relative left-1/2 z-[40] -translate-x-1/2 border border-line bg-card p-3.5 nodrag",
+            generatorOnly
+              ? "mt-0 flex w-full flex-col rounded-b-[14px] rounded-t-none shadow-[0_18px_50px_rgba(0,0,0,0.24)]"
+              : "mt-3 rounded-[18px] shadow-[0_18px_50px_rgba(0,0,0,0.24)]",
+            !generatorOnly && (d.combinationEnabled ? "w-[calc(100%+360px)]" : "w-[calc(100%+192px)]"),
           )}
+          style={generatorOnly ? { height: nodeHeight - IMAGE_GENERATOR_HEADER_HEIGHT } : undefined}
           onMouseDown={(e) => e.stopPropagation()}
         >
         <div className="mb-3 flex items-center gap-1.5">
@@ -1586,7 +1705,22 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
           </Chip>
         </div>
 
-        {d.combinationEnabled ? (
+        {hasLinkedTextInput ? (
+          <div className="relative mb-3 flex min-h-[120px] flex-1">
+            <ImeSafeTextarea
+              value=""
+              onValueChange={() => undefined}
+              disabled
+              placeholder="已连接文本节点，提示词以外部文本内容为准"
+              rows={4}
+              className="tf-composer-prompt nodrag nowheel h-full w-full resize-none rounded-[12px] border border-white/[0.065] bg-white/[0.018] px-3 py-2.5 text-[13px] leading-relaxed text-fg-mute outline-none placeholder:text-fg-mute/65 disabled:cursor-not-allowed"
+              spellCheck={false}
+            />
+            <span className="pointer-events-none absolute bottom-2.5 right-3 flex items-center gap-1.5 rounded-full border border-white/[0.07] bg-ink/55 px-2 py-1 text-[9px] text-fg-mute backdrop-blur">
+              <Icon name="ShareNetwork" size={9} /> 文本节点输入
+            </span>
+          </div>
+        ) : d.combinationEnabled ? (
           <>
             <div className="mb-1.5 flex items-center justify-between px-0.5">
               <span className="text-[10px] font-medium tracking-wide text-fg-mute">通用提示词</span>
@@ -1633,11 +1767,11 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
             onValueChange={(nextValue) => {
               const textarea = promptRef.current;
               if (!textarea) return;
-              promptHeightRef.current = resizePromptTextarea(textarea);
+              if (!generatorOnly) promptHeightRef.current = resizePromptTextarea(textarea);
               promptValueRef.current = nextValue;
               promptMeasuredRef.current = true;
-              persistedPromptHeightRef.current = promptHeightRef.current;
-              updateNode(id, { prompt: nextValue, promptHeight: promptHeightRef.current });
+              if (!generatorOnly) persistedPromptHeightRef.current = promptHeightRef.current;
+              updateNode(id, generatorOnly ? { prompt: nextValue } : { prompt: nextValue, promptHeight: promptHeightRef.current });
             }}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !sendDisabled) {
@@ -1647,12 +1781,15 @@ export const ImageNode = memo(function ImageNode({ id, selected, dragging, data 
             }}
             placeholder="可直接文字生图，或上传/连入图片后输入指令进行编辑，如：将背景改为雪夜"
             rows={3}
-            className="tf-composer-prompt nodrag nowheel mb-3 w-full resize-none overflow-y-auto border-none bg-transparent text-[13px] leading-relaxed text-fg outline-none placeholder:text-fg-mute"
+            className={cn(
+              "tf-composer-prompt nodrag nowheel mb-3 min-h-[76px] w-full resize-none overflow-y-auto rounded-[12px] border border-white/[0.09] bg-white/[0.028] px-3 py-2.5 text-[13px] leading-relaxed text-fg outline-none transition-[border-color,background-color,box-shadow] placeholder:text-fg-mute hover:border-white/[0.14] hover:bg-white/[0.038] focus:border-white/[0.2] focus:bg-white/[0.045] focus:shadow-[0_0_0_3px_rgba(255,255,255,0.025)]",
+              generatorOnly && "flex-1",
+            )}
             spellCheck={false}
           />
         )}
 
-        <div className="flex items-center justify-between gap-1">
+        <div className={cn("flex items-center justify-between gap-1", generatorOnly && "mt-auto pt-3")}>
           <div className="flex min-w-0 items-center gap-1">
             <div ref={modelAreaRef} className="relative shrink-0">
               {popover === "model" ? <ModelPopover data={d} nodeId={id} onClose={() => setPopover("none")} /> : null}

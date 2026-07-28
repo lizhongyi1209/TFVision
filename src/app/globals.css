@@ -688,28 +688,6 @@ input {
   cursor: crosshair;
   z-index: 24;
 }
-.tf-port-follow-zone {
-  position: absolute;
-  top: calc(var(--tf-port-top) - 92px);
-  z-index: 23;
-  width: 88px;
-  height: 184px;
-  pointer-events: none;
-  /* The visible half of this ellipse is the port's forgiving fan region. */
-  border-radius: 50%;
-}
-.tf-port-follow-zone--left {
-  left: -82px;
-  clip-path: inset(0 0 0 0 round 50%);
-}
-.tf-port-follow-zone--right {
-  right: -82px;
-  clip-path: inset(0 0 0 0 round 50%);
-}
-.tf-node-wrap:hover .tf-port-follow-zone,
-.tf-node-wrap.selected .tf-port-follow-zone {
-  pointer-events: auto;
-}
 .react-flow__handle.tf-port::before {
   content: "";
   position: absolute;

@@ -4,15 +4,16 @@
 // as the drag handle; double-click to rename), the card frame, left/right ⊕
 // ports (libTV-style), hover actions, and a free-resize grip (width + height).
 
-import { Handle, Position, useReactFlow, useUpdateNodeInternals } from "@xyflow/react";
+import { Handle, Position, useReactFlow } from "@xyflow/react";
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { cn } from "@/lib/utils";
+import { cn, type NodeResizePolicy } from "@/lib/utils";
 import { Icon } from "../icons";
 import { useStudio } from "@/lib/store";
 
 export function NodeShell({
   id,
   selected,
+  dragging,
   label,
   icon,
   children,
@@ -27,10 +28,13 @@ export function NodeShell({
   frameless = false,
   portTop,
   resizeHandleTop,
+  resizeHandleOutside = true,
+  resizePolicy,
   onResizeBegin,
 }: {
   id: string;
   selected?: boolean;
+  dragging?: boolean;
   label: string;
   icon: string;
   children: ReactNode;
@@ -53,6 +57,10 @@ export function NodeShell({
   portTop?: number | string;
   /** 缩放把手相对节点顶部的位置；未设置时贴合整个节点的右下角。 */
   resizeHandleTop?: number;
+  /** 将极简缩放角标放在节点右下外边沿，避免遮挡媒体或参数内容。 */
+  resizeHandleOutside?: boolean;
+  /** Shared resize contract. Omit for free resize using the first rendered size as its minimum. */
+  resizePolicy?: NodeResizePolicy;
   /** 开始缩放时触发，可用于收起会影响节点尺寸的浮层。 */
   onResizeBegin?: () => void;
 }) {
@@ -61,54 +69,35 @@ export function NodeShell({
   const openMenu = useStudio((s) => s.openMenu);
   const updateNode = useStudio((s) => s.updateNode);
   const rf = useReactFlow();
-  const updateNodeInternals = useUpdateNodeInternals();
   const wrapRef = useRef<HTMLDivElement>(null);
-  const portFrameRef = useRef<number | null>(null);
+  const minimumSizeRef = useRef<{ width: number; height?: number }>({ width, height });
+  const wasDraggingRef = useRef(false);
+  const dragEndedAtRef = useRef(0);
   const [editing, setEditing] = useState(false);
+  const [toolbarBlockedByDrag, setToolbarBlockedByDrag] = useState(false);
 
-  useEffect(() => () => {
-    if (portFrameRef.current !== null) cancelAnimationFrame(portFrameRef.current);
-  }, []);
+  useEffect(() => {
+    if (dragging) {
+      wasDraggingRef.current = true;
+      setToolbarBlockedByDrag(true);
+      return;
+    }
+    if (wasDraggingRef.current) {
+      wasDraggingRef.current = false;
+      dragEndedAtRef.current = performance.now();
+    }
+    if (!selected) setToolbarBlockedByDrag(false);
+  }, [dragging, selected]);
 
-  const syncPortGeometry = () => {
-    if (portFrameRef.current !== null) return;
-    portFrameRef.current = requestAnimationFrame(() => {
-      portFrameRef.current = null;
-      updateNodeInternals(id);
-    });
-  };
-
-  const followPointerWithPorts = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.pointerType === "touch") return;
-    const wrap = wrapRef.current;
-    const body = wrap?.querySelector<HTMLElement>("[data-body]");
-    if (!wrap || !body) return;
-    const zoom = rf.getZoom() || 1;
-    const wrapRect = wrap.getBoundingClientRect();
-    const bodyRect = body.getBoundingClientRect();
-    const bodyTop = (bodyRect.top - wrapRect.top) / zoom;
-    const bodyHeight = bodyRect.height / zoom;
-    const anchor = typeof portTop === "number" ? portTop : bodyTop + bodyHeight / 2;
-    const followRange = Math.min(76, Math.max(36, bodyHeight * 0.25));
-    const pointerTop = (e.clientY - wrapRect.top) / zoom;
-    const nextTop = Math.max(
-      bodyTop + 18,
-      Math.min(bodyTop + bodyHeight - 18, Math.max(anchor - followRange, Math.min(anchor + followRange, pointerTop))),
-    );
-    const normalizedY = Math.min(1, Math.abs(nextTop - anchor) / followRange);
-    // A half ellipse: the handle may travel farther outward near its centre,
-    // while gently returning toward the card at the top and bottom edges.
-    const arcFactor = Math.sqrt(Math.max(0, 1 - normalizedY * normalizedY));
-    const minOut = 26;
-    const maxOut = minOut + 30 * arcFactor;
-    const leftDistance = (bodyRect.left - e.clientX) / zoom;
-    const rightDistance = (e.clientX - bodyRect.right) / zoom;
-    const leftOut = Math.max(minOut, Math.min(maxOut, leftDistance));
-    const rightOut = Math.max(minOut, Math.min(maxOut, rightDistance));
-    wrap.style.setProperty("--tf-port-top", `${Math.round(nextTop)}px`);
-    wrap.style.setProperty("--tf-port-left", `${Math.round(-leftOut)}px`);
-    wrap.style.setProperty("--tf-port-right", `${Math.round(-rightOut)}px`);
-    syncPortGeometry();
+  const revealToolbarAfterClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    // Browsers may emit a click immediately after a drag ends. Ignore that
+    // release click so moving a node never turns into an edit interaction.
+    if (dragging || wasDraggingRef.current || performance.now() - dragEndedAtRef.current < 160) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    setToolbarBlockedByDrag(false);
   };
 
   const openPortMenu = (side: "in" | "out") => (e: React.MouseEvent) => {
@@ -141,6 +130,11 @@ export function NodeShell({
     const startW = width;
     const bodyEl = wrapRef.current?.querySelector<HTMLElement>("[data-body]");
     const startH = height ?? (bodyEl ? bodyEl.getBoundingClientRect().height / zoom : 240);
+    if (minimumSizeRef.current.height === undefined) minimumSizeRef.current.height = startH;
+    const minimumWidth = resizePolicy?.minWidth ?? minimumSizeRef.current.width;
+    const minimumHeight = resizePolicy?.minHeight ?? minimumSizeRef.current.height;
+    const maximumWidth = resizePolicy?.maxWidth ?? 1200;
+    const maximumHeight = resizePolicy?.maxHeight ?? 1200;
     const previousUserSelect = document.body.style.userSelect;
     document.body.style.userSelect = "none";
     let resizing = true;
@@ -160,8 +154,22 @@ export function NodeShell({
         cleanup();
         return;
       }
-      const w = Math.round(Math.max(300, Math.min(920, startW + (ev.clientX - startX) / zoom)));
-      const h = Math.round(Math.max(150, Math.min(1000, startH + (ev.clientY - startY) / zoom)));
+      const deltaX = (ev.clientX - startX) / zoom;
+      const deltaY = (ev.clientY - startY) / zoom;
+      let w: number;
+      let h: number;
+      const aspectRatio = resizePolicy?.mode === "preserve-aspect" ? resizePolicy.aspectRatio : undefined;
+      if (aspectRatio && Number.isFinite(aspectRatio) && aspectRatio > 0) {
+        const projectedScale = 1 + ((deltaX * startW) + (deltaY * startH)) / ((startW * startW) + (startH * startH));
+        const minimumScale = Math.max(minimumWidth / startW, minimumHeight / startH);
+        const maximumScale = Math.min(maximumWidth / startW, maximumHeight / startH);
+        const scale = Math.max(minimumScale, Math.min(maximumScale, projectedScale));
+        w = Math.round(startW * scale);
+        h = Math.round(w / aspectRatio);
+      } else {
+        w = Math.round(Math.max(minimumWidth, Math.min(maximumWidth, startW + deltaX)));
+        h = Math.round(Math.max(minimumHeight, Math.min(maximumHeight, startH + deltaY)));
+      }
       updateNode(id, { width: w, height: h });
     };
     window.addEventListener("pointermove", onMove);
@@ -180,10 +188,10 @@ export function NodeShell({
         "--tf-port-left": "-30px",
         "--tf-port-right": "-30px",
       } as CSSProperties}
-      onPointerMove={followPointerWithPorts}
+      onClickCapture={revealToolbarAfterClick}
     >
       {/* 浮动工具条 — 节点上方居中，内联跟随节点（不拦截画布拖动） */}
-      {toolbar ? (
+      {toolbar && !dragging && !toolbarBlockedByDrag ? (
         <div className="nodrag absolute -top-[68px] left-1/2 z-30 -translate-x-1/2" onMouseDown={(e) => e.stopPropagation()}>
           {toolbar}
         </div>
@@ -196,7 +204,7 @@ export function NodeShell({
           <input
             autoFocus
             defaultValue={label}
-            className="nodrag w-0 flex-1 truncate border-none bg-transparent text-[12px] text-fg outline-none"
+            className="tf-name-input nodrag w-0 flex-1 truncate bg-transparent text-[12px] text-fg"
             onMouseDown={(e) => e.stopPropagation()}
             onBlur={(e) => {
               updateNode(id, { label: e.target.value.trim() || label });
@@ -262,10 +270,7 @@ export function NodeShell({
         {children}
       </div>
 
-      {/* Transparent fan-shaped tolerance zones keep the moving ports reachable. */}
-      <div className="tf-port-follow-zone tf-port-follow-zone--left" aria-hidden="true" />
-      <div className="tf-port-follow-zone tf-port-follow-zone--right" aria-hidden="true" />
-      {/* Ports — ⊕ on both flanks, revealed on hover (libTV interaction) */}
+      {/* Ports — fixed ⊕ anchors on both flanks, revealed on hover. */}
       <Handle type="target" position={Position.Left} className="tf-port" style={{ left: "var(--tf-port-left)", top: "var(--tf-port-top)" }} onClick={openPortMenu("in")}>
         <Icon name="Plus" size={12} className="pointer-events-none" />
       </Handle>
@@ -276,21 +281,34 @@ export function NodeShell({
       {/* 右下角缩放把手：自由拖拽调整宽高 */}
       <div
         className={cn(
-          "nodrag group/resize absolute right-2 z-20 h-6 w-6 items-end justify-end",
-          resizeHandleTop === undefined && "bottom-2",
+          "nodrag group/resize absolute z-20 h-6 w-6 items-end justify-end",
+          resizeHandleOutside ? "-bottom-[9px] -right-[9px]" : "right-2",
+          !resizeHandleOutside && resizeHandleTop === undefined && "bottom-2",
           selected ? "flex" : "hidden group-hover/node:flex",
         )}
-        style={{ cursor: "nwse-resize", touchAction: "none", top: resizeHandleTop }}
+        style={{ cursor: "nwse-resize", touchAction: "none", top: resizeHandleOutside ? undefined : resizeHandleTop }}
         onPointerDown={onResizeStart}
-        title="拖拽自由调整节点宽高"
+        title={resizePolicy?.mode === "preserve-aspect" ? "拖拽等比调整节点大小" : "拖拽自由调整节点宽高"}
       >
         <svg
           aria-hidden="true"
           viewBox="0 0 16 16"
-          className="pointer-events-none h-4 w-4 overflow-visible text-fg-mute transition-colors duration-150 group-hover/resize:text-fg"
+          className={cn(
+            "pointer-events-none overflow-visible text-fg-mute transition-[color,transform] duration-150 group-hover/resize:text-fg",
+            resizeHandleOutside ? "h-[15px] w-[15px] group-hover/resize:translate-x-0.5 group-hover/resize:translate-y-0.5" : "h-4 w-4",
+          )}
         >
-          <path d="M3 13 13 3" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
-          <path d="m8 13 5-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+          {resizeHandleOutside ? (
+            <>
+              <path d="M3.5 12.5h2.1a6.9 6.9 0 0 0 6.9-6.9V3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.45" />
+              <path d="M8.2 12.5h.7a3.6 3.6 0 0 0 3.6-3.6v-.7" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.45" />
+            </>
+          ) : (
+            <>
+              <path d="M3 13 13 3" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+              <path d="m8 13 5-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+            </>
+          )}
         </svg>
       </div>
     </div>

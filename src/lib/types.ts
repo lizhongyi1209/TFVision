@@ -151,7 +151,13 @@ export interface HistoryItem {
 
 // ── Canvas node data (client-side, persisted in boards.json) ────────────────
 
-export type NodeKind = "text" | "image" | "video";
+/**
+ * Canvas nodes deliberately separate durable media from generation controls.
+ * `image` / `video` are retained as legacy persistence values and are migrated
+ * when an older board is loaded.
+ */
+export type NodeKind = "text" | "imageAsset" | "imageGenerator" | "videoAsset" | "videoGenerator";
+export type PersistedNodeKind = NodeKind | "image" | "video";
 export type NodeStatus = "idle" | "running" | "success" | "failed" | "cancelled";
 
 export type GroupColor = "graphite" | "slate" | "teal" | "amber" | "rose";
@@ -238,6 +244,8 @@ export type ImageNodeData = {
   height?: number;
   mediaWidth?: number;
   mediaHeight?: number;
+  /** Native media aspect has been applied to the canvas node surface. */
+  mediaLayoutFitted?: boolean;
   /** 已成功写入并回读验证亚马逊 AI 人物 XMP 标签的图片索引。 */
   amazonAiDisclosure?: {
     taggedIndices: number[];
@@ -320,6 +328,8 @@ export type VideoNodeData = {
   mediaWidth?: number;
   mediaHeight?: number;
   mediaFrameRate?: number;
+  /** Native media aspect has been applied to the canvas node surface. */
+  mediaLayoutFitted?: boolean;
   clipStart?: number;
   clipEnd?: number;
   [key: string]: unknown;

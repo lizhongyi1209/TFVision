@@ -28,9 +28,9 @@ const TEMPLATES: Template[] = [
     label: "商品图精修",
     hint: "上传商品图 → 指令化修图",
     build: (addNode, onConnect, o) => {
-      const a = addNode("image", { x: o.x, y: o.y }, { label: "商品原图" });
-      const b = addNode("image", { x: o.x + GAP_X, y: o.y }, {
-        label: "精修结果",
+      const a = addNode("imageAsset", { x: o.x, y: o.y }, { label: "商品原图" });
+      const b = addNode("imageGenerator", { x: o.x + GAP_X, y: o.y }, {
+        label: "商品图精修",
         prompt: "将背景替换为纯白色 (#FFFFFF) 无缝影棚背景，保持商品本身完全一致，柔和均匀布光，商品下方保留自然的浅接触阴影，输出专业电商主图。",
       });
       onConnect({ source: a, target: b, sourceHandle: null, targetHandle: null });
@@ -42,10 +42,10 @@ const TEMPLATES: Template[] = [
     label: "模特换装",
     hint: "模特图 + 服装图 → 上身效果",
     build: (addNode, onConnect, o) => {
-      const model = addNode("image", { x: o.x, y: o.y - 170 }, { label: "模特图" });
-      const garment = addNode("image", { x: o.x, y: o.y + 170 }, { label: "服装图" });
-      const result = addNode("image", { x: o.x + GAP_X, y: o.y }, {
-        label: "换装结果",
+      const model = addNode("imageAsset", { x: o.x, y: o.y - 170 }, { label: "模特图" });
+      const garment = addNode("imageAsset", { x: o.x, y: o.y + 170 }, { label: "服装图" });
+      const result = addNode("imageGenerator", { x: o.x + GAP_X, y: o.y }, {
+        label: "模特换装",
         prompt: "以第一张图中的人物为基础，将其上装替换为第二张图中的服装。忠实还原第二件服装的设计、颜色、面料质感、图案与版型，自然贴合人物姿势。其余一切保持不变：同样的脸、发型、表情、体型、姿势、下装、鞋、背景、光影与构图。写实电商时尚摄影。",
       });
       onConnect({ source: model, target: result, sourceHandle: null, targetHandle: null });
@@ -58,9 +58,9 @@ const TEMPLATES: Template[] = [
     label: "反推重绘",
     hint: "参考图 → 反推提示词 → 重生成",
     build: (addNode, onConnect, o) => {
-      const src = addNode("image", { x: o.x, y: o.y }, { label: "参考图" });
+      const src = addNode("imageAsset", { x: o.x, y: o.y }, { label: "参考图" });
       const text = addNode("text", { x: o.x + 490, y: o.y }, { label: "反推提示词" });
-      const out = addNode("image", { x: o.x + 490 + 440, y: o.y }, { label: "重绘结果" });
+      const out = addNode("imageGenerator", { x: o.x + 490 + 440, y: o.y }, { label: "图片重绘" });
       onConnect({ source: src, target: text, sourceHandle: null, targetHandle: null });
       onConnect({ source: text, target: out, sourceHandle: null, targetHandle: null });
     },
@@ -71,8 +71,8 @@ const TEMPLATES: Template[] = [
     label: "首帧图生视频",
     hint: "图片节点 → 视频节点",
     build: (addNode, onConnect, o) => {
-      const img = addNode("image", { x: o.x, y: o.y }, { label: "首帧图" });
-      const vid = addNode("video", { x: o.x + GAP_X, y: o.y }, { label: "成片" });
+      const img = addNode("imageAsset", { x: o.x, y: o.y }, { label: "首帧图" });
+      const vid = addNode("videoGenerator", { x: o.x + GAP_X, y: o.y }, { label: "视频生成" });
       onConnect({ source: img, target: vid, sourceHandle: null, targetHandle: null });
     },
   },

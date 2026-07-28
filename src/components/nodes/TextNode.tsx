@@ -43,7 +43,7 @@ const TOOLS: Tool[] = [
   { type: "cmd", icon: "Minus", title: "分隔线", cmd: "insertHorizontalRule" },
 ];
 
-export const TextNode = memo(function TextNode({ id, selected, data }: NodeProps<AppNode>) {
+export const TextNode = memo(function TextNode({ id, selected, dragging, data }: NodeProps<AppNode>) {
   const d = data as TextNodeData;
   const updateNode = useStudio((s) => s.updateNode);
   const showToast = useStudio((s) => s.showToast);
@@ -118,11 +118,12 @@ export const TextNode = memo(function TextNode({ id, selected, data }: NodeProps
     <NodeShell
       id={id}
       selected={selected}
+      dragging={dragging}
       label={d.label}
       icon="TextT"
       width={d.width || 380}
       height={d.height}
-      toolbar={selected ? toolbar : undefined}
+      toolbar={selected && !dragging ? toolbar : undefined}
       showHeaderActions={false}
     >
       <div data-body style={d.height ? { height: d.height } : undefined} className="relative bg-panel p-3">

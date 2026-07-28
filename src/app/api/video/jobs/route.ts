@@ -29,6 +29,27 @@ const ENDPOINT_UNIFIED = "/v1/video/generations";
 const MAX_BODY_BYTES = 128 * 1024;
 
 const MODE_MAP: Record<string, string> = { "720p": "std", "1080p": "pro", "4K": "4k" };
+
+function upstreamDiagnostic(response: Response, requestedUrl: string, body: string, summary: string) {
+  const contentType = response.headers.get("content-type") || "未提供";
+  const requestId = response.headers.get("x-request-id")
+    || response.headers.get("x-correlation-id")
+    || response.headers.get("cf-ray")
+    || "未提供";
+  const responseBody = body.trim();
+
+  return [
+    summary,
+    `请求地址：${requestedUrl}`,
+    `最终地址：${response.url || requestedUrl}`,
+    `HTTP 状态：${response.status} ${response.statusText || ""}`.trim(),
+    `Content-Type：${contentType}`,
+    `发生重定向：${response.redirected ? "是" : "否"}`,
+    `上游请求 ID：${requestId}`,
+    responseBody ? `响应正文：\n${responseBody}` : "响应正文：（空）",
+  ].join("\n");
+}
+
 export async function POST(req: Request) {
   const s = await readSettings();
   if (!s.apiKey) return NextResponse.json({ error: "未设置 API 令牌" }, { status: 400 });
@@ -218,7 +239,8 @@ export async function POST(req: Request) {
     }
   }
 
-  const submitRes = await fetch(`${baseUrl}${endpoint}`, {
+  const submitUrl = `${baseUrl}${endpoint}`;
+  const submitRes = await fetch(submitUrl, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -230,14 +252,20 @@ export async function POST(req: Request) {
 
   const text = await submitRes.text();
   if (![200, 201, 202].includes(submitRes.status)) {
-    return NextResponse.json({ error: `提交失败 HTTP ${submitRes.status}: ${text.slice(0, 300)}` }, { status: 500 });
+    return NextResponse.json(
+      { error: upstreamDiagnostic(submitRes, submitUrl, text, "上游视频接口请求失败。") },
+      { status: 502 },
+    );
   }
 
   let payload: Record<string, unknown>;
   try {
     payload = JSON.parse(text);
   } catch {
-    return NextResponse.json({ error: `响应非 JSON: ${text.slice(0, 200)}` }, { status: 500 });
+    return NextResponse.json(
+      { error: upstreamDiagnostic(submitRes, submitUrl, text, "上游视频接口返回了非 JSON 响应。") },
+      { status: 502 },
+    );
   }
 
   const responseCode = payload.code;

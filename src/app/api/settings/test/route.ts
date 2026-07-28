@@ -32,7 +32,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       ok: true,
       reachable: true,
-      message: `连接正常（${baseUrl}），令牌已被接受。首次生成时会真正校验额度。`,
+      message: "测试成功",
       baseUrl,
     });
   } catch (e) {

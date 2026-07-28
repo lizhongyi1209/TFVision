@@ -14,6 +14,7 @@ import {
   ReactFlowProvider,
   useReactFlow,
   type EdgeMouseHandler,
+  type OnConnectEnd,
 } from "@xyflow/react";
 import { useStudio, type AppNode } from "@/lib/store";
 import { ImageNode } from "./nodes/ImageNode";
@@ -29,12 +30,22 @@ import { HistoryPanel } from "./HistoryPanel";
 import { Toaster } from "./Toaster";
 import { AgentPanel } from "./AgentPanel";
 import { Icon } from "./icons";
-import { fileToDataURL } from "@/lib/utils";
+import { fileToDataURL, fitMediaNodeSize } from "@/lib/utils";
 import { rememberVideoReferenceBlob } from "@/lib/videoReferenceStorage";
 import { inspectVideoFile } from "@/lib/mediaMetadata";
 import type { VideoNodeData } from "@/lib/types";
 
-const NODE_TYPES = { text: TextNode, image: ImageNode, video: VideoNode, group: GroupNode };
+const NODE_TYPES = {
+  text: TextNode,
+  imageAsset: ImageNode,
+  imageGenerator: ImageNode,
+  videoAsset: VideoNode,
+  videoGenerator: VideoNode,
+  // Legacy aliases only exist until loadWorkspace migrates persisted boards.
+  image: ImageNode,
+  video: VideoNode,
+  group: GroupNode,
+};
 
 const isImageFile = (file: File) =>
   file.type.startsWith("image/") || /\.(?:png|jpe?g|webp|gif|avif)$/i.test(file.name);
@@ -158,6 +169,30 @@ function Canvas() {
     [removeEdge],
   );
 
+  const onConnectEnd: OnConnectEnd = useCallback(
+    (event, connectionState) => {
+      // A handle was reached (valid or invalid): let React Flow own that
+      // interaction and only open the menu for a genuine empty-canvas drop.
+      if (!connectionState.fromNode || !connectionState.fromHandle || connectionState.toNode) return;
+
+      const point = "changedTouches" in event ? event.changedTouches[0] : event;
+      if (!point) return;
+      const dropTarget = document.elementFromPoint(point.clientX, point.clientY) as HTMLElement | null;
+      if (!dropTarget?.closest(".react-flow") || dropTarget.closest(".react-flow__node")) return;
+
+      const screen = { x: point.clientX, y: point.clientY };
+      const flowPosition = rf.screenToFlowPosition(screen);
+      const nodeId = connectionState.fromNode.id;
+      openMenu({
+        flowPosition,
+        screen,
+        sourceNodeId: connectionState.fromHandle.type === "source" ? nodeId : undefined,
+        targetNodeId: connectionState.fromHandle.type === "target" ? nodeId : undefined,
+      });
+    },
+    [rf, openMenu],
+  );
+
   // Drop an image/video file on the empty canvas -> a playable media node.
   // Drops over an existing video node remain multimodal reference inputs.
   const onDrop = useCallback(
@@ -172,7 +207,7 @@ function Canvas() {
       const flowPosition = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
       if (isImageFile(file)) {
         void fileToDataURL(file).then((url) => {
-          addNode("image", flowPosition, { url, urls: [url] });
+          addNode("imageAsset", flowPosition, { url, urls: [url] });
         });
         return;
       }
@@ -181,7 +216,7 @@ function Canvas() {
       void rememberVideoReferenceBlob(assetId, file).catch(() => {
         useStudio.getState().showToast(`${file.name} 本地保存失败，刷新页面后需要重新拖入`, "error");
       });
-      const nodeId = addNode("video", flowPosition, {
+      const nodeId = addNode("videoAsset", flowPosition, {
         label: file.name.replace(/\.[^.]+$/, "") || "导入视频",
         model: "v3-omni",
         aspectRatio: "智能",
@@ -209,6 +244,9 @@ function Canvas() {
           mediaWidth: metadata.width,
           mediaHeight: metadata.height,
           mediaFrameRate: metadata.frameRate,
+          ...(metadata.width && metadata.height
+            ? { ...fitMediaNodeSize(metadata.width, metadata.height, 520), mediaLayoutFitted: true }
+            : {}),
           sourceVideo: {
             ...current.sourceVideo,
             width: metadata.width,
@@ -237,6 +275,7 @@ function Canvas() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onConnectEnd={onConnectEnd}
         onDoubleClick={onDoubleClick}
         onEdgeDoubleClick={onEdgeDoubleClick}
         onPaneClick={closeMenu}

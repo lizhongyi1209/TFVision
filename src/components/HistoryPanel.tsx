@@ -46,25 +46,17 @@ export function HistoryPanel() {
   const placeOnCanvas = (item: HistoryItem) => {
     const center = rf.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
     if (item.kind === "image") {
-      addNode("image", center, {
+      addNode("imageAsset", center, {
         url: item.url,
         urls: [item.url],
-        prompt: item.meta?.prompt ?? "",
-        ...(item.meta
-          ? {
-              model: item.meta.model,
-              resolution: item.meta.resolution,
-              aspectRatio: item.meta.aspectRatio,
-              billing: item.meta.billing,
-            }
-          : {}),
+        label: "历史图片",
       });
     } else {
-      addNode("video", center, {
+      addNode("videoAsset", center, {
         url: item.url,
         status: "success",
         progress: 100,
-        prompt: item.videoMeta?.prompt ?? "",
+        label: "历史视频",
       });
     }
     setOpen(false);
