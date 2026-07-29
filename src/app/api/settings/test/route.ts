@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { readSettings } from "@/lib/settings";
-import { resolveBaseUrl, TASK_ENDPOINT } from "@/lib/o1key";
+import { isRouteName, resolveBaseUrl } from "@/lib/networkRoutes";
+import { TASK_ENDPOINT } from "@/lib/o1key";
 import { diagnosticFetch } from "@/lib/diagnostics.server";
 
 export const runtime = "nodejs";
@@ -13,10 +14,11 @@ export async function POST(req: Request) {
   const s = await readSettings();
 
   const apiKey = (typeof body.apiKey === "string" && body.apiKey.trim()) || s.apiKey;
-  const baseUrl = resolveBaseUrl(s.route);
+  const route = isRouteName(body.route) ? body.route : s.route;
+  const baseUrl = resolveBaseUrl(route);
 
   if (!apiKey) {
-    return NextResponse.json({ ok: false, reachable: false, message: "未设置 API 令牌", baseUrl });
+    return NextResponse.json({ ok: false, reachable: false, message: "未设置 API 令牌" });
   }
 
   const url = `${baseUrl}${TASK_ENDPOINT}connectivity-probe-000`;
@@ -31,21 +33,18 @@ export async function POST(req: Request) {
         ok: false,
         reachable: true,
         message: `令牌被拒绝 (HTTP ${res.status})，请检查 o1key 令牌是否正确`,
-        baseUrl,
       });
     }
     return NextResponse.json({
       ok: true,
       reachable: true,
       message: "测试成功",
-      baseUrl,
     });
   } catch (e) {
     return NextResponse.json({
       ok: false,
       reachable: false,
-      message: `无法连接 ${baseUrl}：${(e as Error)?.message || e}。请检查网络。`,
-      baseUrl,
+      message: `无法连接所选线路：${(e as Error)?.message || e}。请检查网络。`,
     });
   }
 }

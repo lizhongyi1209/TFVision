@@ -8,6 +8,9 @@ import { useStudio } from "@/lib/store";
 import { Icon } from "./icons";
 import { Button, Field, Spinner } from "./ui";
 import { cn } from "@/lib/utils";
+import type { RouteName } from "@/lib/types";
+
+const NETWORK_ROUTES: RouteName[] = ["国内加速", "国外加速"];
 
 export function SettingsPanel() {
   const open = useStudio((s) => s.settingsOpen);
@@ -17,6 +20,7 @@ export function SettingsPanel() {
   const showToast = useStudio((s) => s.showToast);
 
   const [key, setKey] = useState("");
+  const [route, setRoute] = useState<RouteName>("国内加速");
   const [testing, setTesting] = useState(false);
   const [testMsg, setTestMsg] = useState<{ ok: boolean; msg: string } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -24,9 +28,10 @@ export function SettingsPanel() {
   useEffect(() => {
     if (open) {
       setKey("");
+      setRoute(settings?.route ?? "国内加速");
       setTestMsg(null);
     }
-  }, [open]);
+  }, [open, settings?.route]);
 
   const test = async () => {
     setTesting(true);
@@ -35,7 +40,10 @@ export function SettingsPanel() {
       const res = await fetch("/api/settings/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(key.trim() ? { apiKey: key.trim() } : {}),
+        body: JSON.stringify({
+          route,
+          ...(key.trim() ? { apiKey: key.trim() } : {}),
+        }),
       });
       const payload = (await res.json()) as { ok: boolean; message: string };
       setTestMsg({ ok: payload.ok, msg: payload.ok ? "测试成功" : payload.message });
@@ -48,7 +56,10 @@ export function SettingsPanel() {
 
   const save = async () => {
     setSaving(true);
-    const ok = await saveSettings(key.trim() ? { apiKey: key.trim() } : {});
+    const ok = await saveSettings({
+      route,
+      ...(key.trim() ? { apiKey: key.trim() } : {}),
+    });
     setSaving(false);
     if (ok) {
       showToast("设置已保存", "success");
@@ -101,6 +112,39 @@ export function SettingsPanel() {
                   spellCheck={false}
                 />
               </Field>
+
+              <div className="flex flex-col gap-1.5">
+                <span id="network-route-label" className="text-[11px] font-medium tracking-wide text-fg-mute">网络线路</span>
+                <div
+                  role="radiogroup"
+                  aria-labelledby="network-route-label"
+                  className="grid grid-cols-2 gap-1 rounded-[11px] border border-line bg-panel-2 p-1"
+                >
+                  {NETWORK_ROUTES.map((option) => {
+                    const selected = route === option;
+                    return (
+                      <button
+                        key={option}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        onClick={() => {
+                          setRoute(option);
+                          setTestMsg(null);
+                        }}
+                        className={cn(
+                          "relative h-9 rounded-[8px] text-[12px] font-medium transition-[background-color,color,box-shadow] active:scale-[0.99]",
+                          selected
+                            ? "bg-white/[0.1] text-fg shadow-[0_5px_16px_rgba(0,0,0,0.22)]"
+                            : "text-fg-mute hover:bg-white/[0.045] hover:text-fg-dim",
+                        )}
+                      >
+                        {option}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
 
               {testMsg ? (
                 <div

@@ -1,25 +1,29 @@
 // Video gateway helpers (ported from TVision src/lib/videoGateway.ts).
 // Builds Kling / Seedance request bodies and extracts task ids / video URLs.
 
-import type { VideoAspectRatio, VideoBillingEntry, VideoInputMode, VideoJobParams, VideoModel, VideoResolution } from "./types";
+import type { VideoAspectRatio, VideoBillingEntry, VideoInputMode, VideoJobParams, VideoModel, VideoReferenceAsset, VideoResolution } from "./types";
 import { assignVideoPromptReferences } from "./videoPromptReferences.ts";
 
 export const VIDEO_MODEL_IDS: Record<VideoModel, string> = {
   "v3": "kling-v3",
   "v2-6": "kling-v2-6",
   "v3-omni": "kling-v3-omni",
+  "v3-motion-control": "kling-3.0",
   "seedance-2.0": "seedance-2.0",
   "seedance-2.0-fast": "seedance-2.0-fast",
+  "seedance-2.0-mini": "seedance-2.0-mini",
 };
 
-const SEEDANCE_MODELS = new Set<VideoModel>(["seedance-2.0", "seedance-2.0-fast"]);
+const SEEDANCE_MODELS = new Set<VideoModel>(["seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini"]);
 
 const MODEL_RESOLUTIONS: Record<VideoModel, readonly VideoResolution[]> = {
   "v3": ["720p", "1080p", "4K"],
   "v2-6": ["720p", "1080p"],
   "v3-omni": ["720p", "1080p", "4K"],
+  "v3-motion-control": ["720p", "1080p"],
   "seedance-2.0": ["720p", "1080p", "4K"],
   "seedance-2.0-fast": ["720p"],
+  "seedance-2.0-mini": ["720p"],
 };
 
 const SEEDANCE_RATIOS = new Set<VideoAspectRatio>(["智能", "16:9", "4:3", "1:1", "3:4", "9:16"]);
@@ -39,6 +43,9 @@ export function allowedVideoResolutions(model: VideoModel): readonly VideoResolu
 
 export function allowedVideoDurations(model: VideoModel): readonly number[] {
   if (model === "v2-6") return [5, 10];
+  if (model === "v3-motion-control") {
+    return [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30];
+  }
   if (isSeedanceModel(model)) return [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
   return [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 }
@@ -50,7 +57,7 @@ export function allowedVideoAspectRatios(model: VideoModel): readonly VideoAspec
 }
 
 export function supportsShots(model: VideoModel): boolean {
-  return model !== "v2-6" && !isSeedanceModel(model);
+  return model !== "v2-6" && model !== "v3-motion-control" && !isSeedanceModel(model);
 }
 
 export function shouldUseConnectedImageAsFirstFrame(
@@ -62,9 +69,38 @@ export function shouldUseConnectedImageAsFirstFrame(
   return model === "v3" || model === "v2-6" || inputMode === "keyframes";
 }
 
+export function resolveKeyframeSlots(
+  explicitAssets: readonly VideoReferenceAsset[],
+  connectedImages: readonly VideoReferenceAsset[],
+): {
+  firstFrame?: VideoReferenceAsset;
+  lastFrame?: VideoReferenceAsset;
+  connectedFrameIds: string[];
+} {
+  let firstFrame = explicitAssets.find((asset) => asset.kind === "image" && asset.role === "first_frame");
+  let lastFrame = explicitAssets.find((asset) => asset.kind === "image" && asset.role === "last_frame");
+  const openRoles = [
+    ...(!firstFrame ? ["first_frame" as const] : []),
+    ...(!lastFrame ? ["last_frame" as const] : []),
+  ];
+  const connectedFrameIds: string[] = [];
+
+  for (const asset of connectedImages) {
+    const role = openRoles.shift();
+    if (!role) break;
+    const assigned = { ...asset, role };
+    connectedFrameIds.push(asset.id);
+    if (role === "first_frame") firstFrame = assigned;
+    else lastFrame = assigned;
+  }
+
+  return { firstFrame, lastFrame, connectedFrameIds };
+}
+
 export function videoStatusEndpoint(model: VideoModel, taskId: string): string {
   const encodedTaskId = encodeURIComponent(taskId);
   if (model === "v3-omni") return `/kling/omni-video/kling-3.0-omni/${encodedTaskId}`;
+  if (model === "v3-motion-control") return `/kling/motion-control/kling-3.0/${encodedTaskId}`;
   if (isSeedanceModel(model)) return `/v1/video/generations/${encodedTaskId}`;
   return `/kling/v1/videos/image2video/${encodedTaskId}`;
 }
@@ -75,7 +111,7 @@ export function maxReferenceImages(model: VideoModel): number {
 
 export function maxReferenceVideos(model: VideoModel): number {
   if (isSeedanceModel(model)) return 3;
-  if (model === "v3-omni") return 1;
+  if (model === "v3-omni" || model === "v3-motion-control") return 1;
   return 0;
 }
 
@@ -97,6 +133,46 @@ function cleanUrls(values: unknown, limit: number): string[] {
     }
   }
   return urls;
+}
+
+export function buildKlingMotionControlGenerationBody(params: VideoJobParams): Record<string, unknown> {
+  if (params.model !== "v3-motion-control") throw new Error("不是可灵 3.0 动作控制模型");
+  if (!allowedVideoResolutions(params.model).includes(params.mode)) {
+    throw new Error(`可灵动作控制不支持 ${params.mode} 分辨率`);
+  }
+
+  const prompt = (params.prompt ?? "").trim();
+  if (!prompt) throw new Error("提示词不能为空");
+  if (prompt.length > 2500) throw new Error("可灵动作控制提示词不能超过 2500 字符");
+
+  const imageUrls = cleanUrls(params.refUrls, 1);
+  const videoUrls = cleanUrls(params.videoUrls, 1);
+  if (videoUrls.length !== 1) throw new Error("可灵动作控制必须提供 1 段动作参考视频");
+
+  const elementId = typeof params.elementId === "string" ? params.elementId.trim() : "";
+  if (elementId) throw new Error("当前版本暂不支持 Element，请使用形象参考图");
+  if (imageUrls.length !== 1) throw new Error("请提供 1 张形象参考图");
+
+  const requestedOrientation = params.characterOrientation === "image" ? "image" : "video";
+  const audio = params.audioMode === "original" ? "original" : "off";
+
+  const contents: Record<string, unknown>[] = [{ type: "prompt", text: prompt }];
+  contents.push({ type: "image", url: imageUrls[0] });
+  contents.push({ type: "video", url: videoUrls[0] });
+
+  const options: Record<string, unknown> = {
+    watermark_info: { enabled: false },
+  };
+
+  return {
+    contents,
+    settings: {
+      character_orientation: requestedOrientation,
+      audio,
+      resolution: params.mode,
+    },
+    options,
+  };
 }
 
 export function buildKlingOmniGenerationBody(params: VideoJobParams): Record<string, unknown> {

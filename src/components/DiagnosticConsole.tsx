@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import type { DiagnosticCategory, DiagnosticEntry, DiagnosticSnapshot } from "@/lib/diagnostics";
+import {
+  diagnosticRawError,
+  diagnosticStatusCode,
+  type DiagnosticCategory,
+  type DiagnosticEntry,
+  type DiagnosticSnapshot,
+} from "@/lib/diagnostics";
 import { cn } from "@/lib/utils";
 import { Icon } from "./icons";
 
@@ -33,11 +39,6 @@ function displayText(value: string, pretty: boolean) {
   } catch {
     return value;
   }
-}
-
-function statusLabel(entry: DiagnosticEntry) {
-  if (entry.responseStatus === null) return "网络错误";
-  return `${entry.responseStatus}${entry.responseStatusText ? ` ${entry.responseStatusText}` : ""}`;
 }
 
 function timestamp(value: number) {
@@ -241,7 +242,17 @@ export function DiagnosticConsole({ open, onClose }: { open: boolean; onClose: (
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate text-[11px] font-medium text-fg">{entry.label}</span>
-                        <span className={cn("shrink-0 font-mono text-[9px]", entry.ok ? "text-accent" : "text-danger")}>{statusLabel(entry)}</span>
+                        <span
+                          title={entry.responseStatusText || entry.error || (entry.ok ? "请求成功" : "网络错误")}
+                          className={cn(
+                            "min-w-[34px] shrink-0 rounded-[5px] border px-1.5 py-0.5 text-center font-mono text-[9px] font-semibold tabular-nums",
+                            entry.ok
+                              ? "border-accent/20 bg-accent/[0.07] text-accent"
+                              : "border-danger/25 bg-danger/[0.08] text-danger",
+                          )}
+                        >
+                          {diagnosticStatusCode(entry)}
+                        </span>
                       </div>
                       <div className="mt-1.5 flex items-center gap-2 text-[9px] text-fg-mute">
                         <span>{CATEGORY_LABEL[entry.category]}</span>
@@ -272,7 +283,14 @@ export function DiagnosticConsole({ open, onClose }: { open: boolean; onClose: (
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className="rounded-md bg-white/[0.07] px-2 py-1 font-mono text-[10px] text-fg">{selected.method}</span>
-                          <span className={cn("text-[11px] font-medium", selected.ok ? "text-accent" : "text-danger")}>{statusLabel(selected)}</span>
+                          <span className={cn(
+                            "rounded-md border px-2 py-1 font-mono text-[10px] font-semibold tabular-nums",
+                            selected.ok
+                              ? "border-accent/20 bg-accent/[0.07] text-accent"
+                              : "border-danger/25 bg-danger/[0.08] text-danger",
+                          )}>
+                            {diagnosticStatusCode(selected)}
+                          </span>
                           <span className="text-[10px] text-fg-mute">{selected.durationMs}ms</span>
                         </div>
                         <button
@@ -283,7 +301,6 @@ export function DiagnosticConsole({ open, onClose }: { open: boolean; onClose: (
                         >
                           {selected.endpoint}
                         </button>
-                        {selected.error ? <p className="mt-2 text-[11px] text-danger">{selected.error}</p> : null}
                       </div>
                       <button
                         type="button"
@@ -295,7 +312,13 @@ export function DiagnosticConsole({ open, onClose }: { open: boolean; onClose: (
                     </div>
                     <div className="flex min-h-0 flex-1 flex-col gap-3 xl:flex-row">
                       <PayloadPane title="请求体" value={selected.requestBody} pretty={pretty} truncated={selected.requestTruncated} onCopy={() => void copy("request", selected.requestBody)} />
-                      <PayloadPane title="原始响应体" value={selected.responseBody || selected.error || ""} pretty={pretty} truncated={selected.responseTruncated} onCopy={() => void copy("response", selected.responseBody || selected.error || "")} />
+                      <PayloadPane
+                        title={selected.ok ? "原始响应体" : "原始错误"}
+                        value={selected.ok ? selected.responseBody : diagnosticRawError(selected)}
+                        pretty={selected.ok ? pretty : false}
+                        truncated={selected.responseTruncated}
+                        onCopy={() => void copy("response", selected.ok ? selected.responseBody : diagnosticRawError(selected))}
+                      />
                     </div>
                     {copied ? <div className="pointer-events-none absolute bottom-6 right-6 rounded-control border border-white/[0.1] bg-[#202023] px-3 py-2 text-[11px] text-fg shadow-xl">已复制{copied === "endpoint" ? "端点" : copied === "request" ? "请求体" : "响应体"}</div> : null}
                   </>

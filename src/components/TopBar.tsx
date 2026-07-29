@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useStudio } from "@/lib/store";
+import { TOKEN_BALANCE_REFRESH_EVENT } from "@/lib/tokenBalanceRefresh";
 import { Icon } from "./icons";
 import { cn } from "@/lib/utils";
 
@@ -138,13 +139,14 @@ function TokenBalance({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [balance, setBalance] = useState<BalanceState>({ status: "idle" });
 
   const refresh = useCallback(async () => {
-    if (!settings?.hasApiKey) {
+    const latestSettings = useStudio.getState().settings;
+    if (!latestSettings?.hasApiKey) {
       setBalance({ status: "idle" });
       return;
     }
     setBalance((current) => current.status === "success" ? current : { status: "loading" });
     try {
-      const response = await fetch("/api/account/balance", { cache: "no-store" });
+      const response = await fetch("/api/account/balance?force=1", { cache: "no-store" });
       const payload = (await response.json().catch(() => ({}))) as {
         ok?: boolean;
         display?: string;
@@ -166,20 +168,18 @@ function TokenBalance({ onOpenSettings }: { onOpenSettings: () => void }) {
         ? current
         : { status: "error", message: error instanceof Error ? error.message : "暂时无法获取余额" });
     }
-  }, [settings]);
+  }, []);
 
   useEffect(() => {
     if (!settings?.hasApiKey) {
       setBalance({ status: "idle" });
-      return;
+    } else {
+      setBalance({ status: "idle" });
     }
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 60_000);
-    const refreshOnFocus = () => void refresh();
-    window.addEventListener("focus", refreshOnFocus);
+    const refreshAfterTask = () => void refresh();
+    window.addEventListener(TOKEN_BALANCE_REFRESH_EVENT, refreshAfterTask);
     return () => {
-      window.clearInterval(timer);
-      window.removeEventListener("focus", refreshOnFocus);
+      window.removeEventListener(TOKEN_BALANCE_REFRESH_EVENT, refreshAfterTask);
     };
   }, [refresh, settings?.hasApiKey]);
 
@@ -192,13 +192,12 @@ function TokenBalance({ onOpenSettings }: { onOpenSettings: () => void }) {
       : `令牌剩余额度${balance.rawQuota != null ? `（${balance.rawQuota.toLocaleString("zh-CN")} quota）` : ""} · 点击管理令牌`
     : balance.status === "error"
       ? `${balance.message} · 点击检查令牌设置`
-      : "正在查询令牌余额";
+      : "完成生成或 Agent 对话后更新余额";
 
   return (
     <button
       type="button"
       onClick={() => {
-        if (hasApiKey) void refresh();
         onOpenSettings();
       }}
       title={title}
@@ -227,7 +226,7 @@ function TokenBalance({ onOpenSettings }: { onOpenSettings: () => void }) {
       ) : balance.status === "error" ? (
         <span className="font-sans text-[12px]">余额获取失败</span>
       ) : (
-        <span className="font-sans text-[12px] font-medium">余额查询中</span>
+        <span className="font-sans text-[12px] font-medium">余额待更新</span>
       )}
       {hasApiKey ? (
         <span className="ml-0.5 flex h-5 items-center border-l border-current/20 pl-2 opacity-60 transition-opacity group-hover:opacity-100">

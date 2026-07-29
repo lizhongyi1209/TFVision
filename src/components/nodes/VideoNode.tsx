@@ -25,6 +25,7 @@ import { VIDEO_MODELS, VIDEO_MODEL_RESOLUTIONS, videoDurationsFor } from "@/lib/
 import {
   allowedVideoAspectRatios,
   isSeedanceModel,
+  resolveKeyframeSlots,
   shouldUseConnectedImageAsFirstFrame,
   supportsShots,
 } from "@/lib/videoGateway";
@@ -50,6 +51,7 @@ const VIDEO_REFERENCE_ACCEPT = "image/png,image/jpeg,image/webp,video/mp4,video/
 const VIDEO_KEYFRAME_ACCEPT = "image/png,image/jpeg,image/webp";
 const KLING_OMNI_REFERENCE_ACCEPT = "image/png,image/jpeg,video/mp4,video/quicktime";
 const KLING_OMNI_KEYFRAME_ACCEPT = "image/png,image/jpeg";
+const KLING_MOTION_REFERENCE_ACCEPT = "image/png,image/jpeg,video/mp4,video/quicktime";
 const VIDEO_GENERATOR_HEADER_HEIGHT = 94;
 const VIDEO_GENERATOR_MIN_HEIGHT = 330;
 
@@ -98,29 +100,38 @@ async function inspectReferenceFile(
   file: File,
   kind: VideoReferenceKind,
   model: VideoModel,
+  characterOrientation: "image" | "video" = "video",
 ): Promise<Pick<VideoReferenceAsset, "mimeType" | "sizeBytes" | "width" | "height" | "duration" | "frameRate">> {
   const base = { mimeType: file.type, sizeBytes: file.size };
   const videoMetadata = kind === "video" ? await inspectVideoFile(file) : null;
-  if (model !== "v3-omni") return { ...base, ...(videoMetadata ?? {}) };
-  if (kind === "audio") throw new Error("可灵 Omni 不支持参考音频");
+  if (model !== "v3-omni" && model !== "v3-motion-control") return { ...base, ...(videoMetadata ?? {}) };
+  const motionControl = model === "v3-motion-control";
+  const modelLabel = motionControl ? "可灵动作控制" : "可灵 Omni";
+  if (kind === "audio") throw new Error(`${modelLabel}不支持参考音频`);
   if (kind === "image" && !/^(?:image\/jpeg|image\/png)$/i.test(file.type) && !/\.(?:jpe?g|png)$/i.test(file.name)) {
-    throw new Error("可灵 Omni 图片仅支持 JPG、JPEG 或 PNG");
+    throw new Error(`${modelLabel}图片仅支持 JPG、JPEG 或 PNG`);
   }
-  if (kind === "image" && file.size > 50 * 1024 * 1024) throw new Error("可灵 Omni 图片不能超过 50MB");
-  if (kind === "video" && file.size > 200 * 1024 * 1024) throw new Error("可灵 Omni 视频不能超过 200MB");
+  if (kind === "image" && file.size > 50 * 1024 * 1024) throw new Error(`${modelLabel}图片不能超过 50MB`);
+  const maxVideoBytes = motionControl ? 100 : 200;
+  if (kind === "video" && file.size > maxVideoBytes * 1024 * 1024) throw new Error(`${modelLabel}视频不能超过 ${maxVideoBytes}MB`);
   const metadata = videoMetadata ?? await readVisualMetadata(file, kind);
   const width = metadata.width ?? 0;
   const height = metadata.height ?? 0;
   const ratio = height ? width / height : 0;
   if (kind === "image") {
-    if (width < 300 || height < 300) throw new Error("可灵 Omni 图片宽高均不能小于 300px");
-    if (ratio < 0.4 || ratio > 2.5) throw new Error("可灵 Omni 图片宽高比必须在 1:2.5 到 2.5:1 之间");
+    if (width < 300 || height < 300) throw new Error(`${modelLabel}图片宽高均不能小于 300px`);
+    if (ratio < 0.4 || ratio > 2.5) throw new Error(`${modelLabel}图片宽高比必须在 1:2.5 到 2.5:1 之间`);
   } else {
     const duration = metadata.duration ?? 0;
-    if (duration < 3 || duration > 15.5) throw new Error("参考视频时长必须在 3-15.5 秒之间");
-    if (width < 700 || height < 700 || width > 4553 || height > 4553) throw new Error("参考视频宽高必须在 700-4553px 之间");
-    if (width * height > 8_294_400) throw new Error("参考视频总像素不能超过 8294400");
-    if (ratio < 0.4 || ratio > 2) throw new Error("参考视频宽高比必须在 0.4-2 之间");
+    const maxDuration = motionControl ? characterOrientation === "image" ? 10 : 30 : 15.5;
+    if (duration < 3 || duration > maxDuration) throw new Error(`参考视频时长必须在 3-${maxDuration} 秒之间`);
+    if (motionControl) {
+      if (width < 340 || height < 340 || width > 3850 || height > 3850) throw new Error("动作参考视频宽高必须在 340-3850px 之间");
+    } else {
+      if (width < 700 || height < 700 || width > 4553 || height > 4553) throw new Error("参考视频宽高必须在 700-4553px 之间");
+      if (width * height > 8_294_400) throw new Error("参考视频总像素不能超过 8294400");
+      if (ratio < 0.4 || ratio > 2) throw new Error("参考视频宽高比必须在 0.4-2 之间");
+    }
   }
   return { ...base, ...metadata };
 }
@@ -261,7 +272,12 @@ function referenceCompatibilityError(model: VideoModel, assets: VideoReferenceAs
     const imageLimit = counts.video ? 4 : 7;
     if (counts.image > imageLimit) return `当前组合下可灵 v3 Omni 最多支持 ${imageLimit} 张参考图`;
   }
-  if (model === "seedance-2.0" || model === "seedance-2.0-fast") {
+  if (model === "v3-motion-control") {
+    if (counts.audio) return "可灵动作控制不支持参考音频";
+    if (counts.video > 1) return "可灵动作控制只能添加 1 段动作参考视频";
+    if (counts.image > 1) return "可灵动作控制只能添加 1 张形象参考图";
+  }
+  if (isSeedanceModel(model)) {
     if (counts.image > 9) return "Seedance 最多支持 9 张参考图";
     if (counts.video > 3) return "Seedance 最多支持 3 段参考视频";
     if (counts.audio > 3) return "Seedance 最多支持 3 段参考音频";
@@ -676,6 +692,7 @@ function VideoParamPopover({
   const ratios = allowedVideoAspectRatios(data.model);
   const seedance = isSeedanceModel(data.model);
   const omni = data.model === "v3-omni";
+  const motionControl = data.model === "v3-motion-control";
   const hasOmniVideo = hasConnectedVideo || Boolean(data.sourceVideo)
     || (Array.isArray(data.referenceAssets) && data.referenceAssets.some((asset) => asset.kind === "video"));
   const selectedAudioMode: VideoAudioMode = data.audioMode ?? (data.keepOriginalSound ? "original" : data.sound ? "native" : "off");
@@ -697,7 +714,7 @@ function VideoParamPopover({
     : configuredShotMode;
 
   return (
-    <div className="glass tf-node-popover popover-enter absolute bottom-full left-0 z-[80] mb-2 w-[340px] origin-bottom-left rounded-panel p-4">
+    <div className="glass tf-node-popover popover-enter absolute bottom-full left-0 z-[80] mb-2 max-h-[72vh] w-[340px] origin-bottom-left overflow-y-auto rounded-panel p-4">
       <button type="button" title="关闭参数" onClick={onClose} className="absolute right-3 top-3 rounded p-1 text-fg-mute hover:bg-white/[0.06] hover:text-fg">
         <Icon name="X" size={12} />
       </button>
@@ -711,14 +728,22 @@ function VideoParamPopover({
         ))}
       </div>
 
-      <div className="mb-1.5 text-[10px] font-medium tracking-wide text-fg-mute">时长</div>
-      <div className="nowheel mb-3 flex max-h-[86px] flex-wrap gap-1.5 overflow-y-auto">
-        {durations.map((duration) => (
-          <Chip key={duration} active={data.duration === duration} onClick={() => set({ duration })}>
-            {duration}s
-          </Chip>
-        ))}
-      </div>
+      {motionControl ? (
+        <div className="mb-3 rounded-[10px] border border-line bg-ink/25 px-3 py-2 text-[9px] leading-relaxed text-fg-mute">
+          输出时长由动作参考视频决定：跟随形象图时最长 10 秒，跟随动作视频时最长 30 秒。
+        </div>
+      ) : (
+        <>
+          <div className="mb-1.5 text-[10px] font-medium tracking-wide text-fg-mute">时长</div>
+          <div className="nowheel mb-3 flex max-h-[86px] flex-wrap gap-1.5 overflow-y-auto">
+            {durations.map((duration) => (
+              <Chip key={duration} active={data.duration === duration} onClick={() => set({ duration })}>
+                {duration}s
+              </Chip>
+            ))}
+          </div>
+        </>
+      )}
 
       {ratios.length ? (
         <>
@@ -812,6 +837,25 @@ function VideoParamPopover({
         </div>
       ) : null}
 
+      {motionControl ? (
+        <div className="mb-3 space-y-3 border-t border-line pt-3">
+          <div>
+            <div className="mb-1.5 text-[10px] font-medium tracking-wide text-fg-mute">角色朝向</div>
+            <div className="flex gap-1.5">
+              <Chip
+                active={(data.characterOrientation ?? "video") === "image"}
+                onClick={() => set({ characterOrientation: "image" })}
+              >
+                跟随形象图
+              </Chip>
+              <Chip active={(data.characterOrientation ?? "video") === "video"} onClick={() => set({ characterOrientation: "video" })}>
+                跟随动作视频
+              </Chip>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="border-t border-line pt-3">
         <div className="mb-1.5 text-[10px] font-medium tracking-wide text-fg-mute">声音</div>
         <div className="flex flex-wrap gap-1.5">
@@ -824,6 +868,21 @@ function VideoParamPopover({
               onClick={() => set({
                 audioMode: mode.value,
                 sound: mode.value === "native",
+                keepOriginalSound: mode.value === "original",
+              })}
+            >
+              <Icon name="MusicNotes" size={11} /> {mode.label}
+            </Chip>
+          )) : motionControl ? ([
+            { value: "original" as const, label: "保留动作视频原声" },
+            { value: "off" as const, label: "关闭声音" },
+          ]).map((mode) => (
+            <Chip
+              key={mode.value}
+              active={(data.audioMode === "original" ? "original" : "off") === mode.value}
+              onClick={() => set({
+                audioMode: mode.value,
+                sound: false,
                 keepOriginalSound: mode.value === "original",
               })}
             >
@@ -899,7 +958,8 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
     ? [sourceVideo, ...referenceAssets.filter((asset) => asset.id !== sourceVideo.id)]
     : referenceAssets;
   const keyframeAssets = Array.isArray(d.keyframeAssets) ? d.keyframeAssets : [];
-  const inputMode: VideoInputMode = d.inputMode === "keyframes" ? "keyframes" : "references";
+  const motionControl = d.model === "v3-motion-control";
+  const inputMode: VideoInputMode = motionControl ? "references" : d.inputMode === "keyframes" ? "keyframes" : "references";
   const activeAssets = inputMode === "keyframes" ? keyframeAssets : referenceAssets;
   const upstreamNodes = edges
     .filter((edge) => edge.target === id && edge.data?.generation !== true)
@@ -940,8 +1000,12 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
     image: storedReferenceCounts.image + upstreamImageCount,
     video: storedReferenceCounts.video + upstreamVideoCount,
   };
-  const firstFrame = keyframeAssets.find((asset) => asset.role === "first_frame");
-  const lastFrame = keyframeAssets.find((asset) => asset.role === "last_frame");
+  const {
+    firstFrame,
+    lastFrame,
+    connectedFrameIds,
+  } = resolveKeyframeSlots(keyframeAssets, inputMode === "keyframes" ? connectedImageAssets : []);
+  const connectedFrameIdSet = new Set(connectedFrameIds);
   const previewImage = inputMode === "keyframes"
     ? firstFrame?.localUrl ?? firstFrame?.url ?? null
     : (() => {
@@ -960,9 +1024,6 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
   const mediaMeta = mediaWidth && mediaHeight
     ? `${mediaWidth} × ${mediaHeight}${mediaFrameRate ? ` · ${Number(mediaFrameRate.toFixed(2))} fps` : ""}${appliedClipDuration ? ` · 片段 ${appliedClipDuration.toFixed(2)}s` : ""}`
     : undefined;
-  const billingSummary = Array.isArray(d.billing)
-    ? d.billing.map((entry) => entry.amount ? `${entry.amount}${entry.charge_type === "unit" ? " 单位" : ""}` : "").filter(Boolean).join(" + ")
-    : "";
   const configuredShotMode: VideoShotMode = d.shotsEnabled || d.shotMode === "custom"
     ? "custom"
     : d.model === "v3-omni" && d.shotModeExplicit !== true
@@ -990,7 +1051,7 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
   };
   const needsFrame = d.model === "v3" || d.model === "v2-6";
   const connectedFirstFrame = connectedImageAssets[0];
-  const useConnectedAsFirstFrame = Boolean(connectedFirstFrame)
+  const useConnectedAsFirstFrame = inputMode !== "keyframes" && Boolean(connectedFirstFrame)
     && shouldUseConnectedImageAsFirstFrame(d.model, inputMode, Boolean(firstFrame));
   const promptFirstFrame = firstFrame ?? (useConnectedAsFirstFrame ? connectedFirstFrame : undefined);
   const promptReferenceInputs: VideoPromptReferenceInput[] = [
@@ -1020,6 +1081,7 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
         previewUrl: asset.localUrl ?? asset.previewUrl ?? asset.url,
       })),
     ...connectedImageAssets
+      .filter((asset) => !connectedFrameIdSet.has(asset.id))
       .slice(useConnectedAsFirstFrame ? 1 : 0)
       .map((asset) => ({
         key: asset.id,
@@ -1064,8 +1126,12 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
   const shotModeSummary = shotMode === "custom" ? "自定义分镜" : shotMode === "auto" ? "自动多镜头" : "单镜头";
   const audioModeSummary = d.model === "v3-omni"
     ? omniAudioMode === "native" ? "生成声音" : omniAudioMode === "original" ? "保留原声" : "关闭声音"
+    : motionControl
+      ? d.audioMode === "original" ? "保留原声" : "关闭声音"
     : d.sound ? "生成音效" : "关闭声音";
-  const paramSummary = `${d.mode} · ${d.duration}s · ${d.aspectRatio} · ${shotModeSummary} · ${audioModeSummary}`;
+  const paramSummary = motionControl
+    ? `${d.mode} · ${d.characterOrientation === "image" ? "跟随形象图" : "跟随动作视频"} · ${audioModeSummary}`
+    : `${d.mode} · ${d.duration}s · ${d.aspectRatio} · ${shotModeSummary} · ${audioModeSummary}`;
   const omniImageLimit = referenceCounts.video ? 4 : 7;
   const omniMetadataError = d.model === "v3-omni" ? omniAssetMetadataError([...keyframeAssets, ...generationReferenceAssets]) : null;
   const omniCompatibilityError = d.model !== "v3-omni"
@@ -1093,7 +1159,27 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
                       : !firstFrame && !referenceCounts.video && d.aspectRatio === "智能"
                         ? "没有首帧或参考视频时必须选择画面比例"
                         : null;
-  const generationError = shotsEnabled && shotTotal !== d.duration
+  const motionVideo = [...generationReferenceAssets, ...connectedVideoAssets].find((asset) => asset.kind === "video");
+  const motionVideoDuration = motionVideo?.duration != null
+    ? Math.max(0, (motionVideo.trimEnd ?? motionVideo.duration) - (motionVideo.trimStart ?? 0))
+    : undefined;
+  const motionMaxDuration = d.characterOrientation === "image" ? 10 : 30;
+  const motionCompatibilityError = !motionControl
+    ? null
+    : referenceCounts.audio
+      ? "可灵动作控制不支持参考音频"
+      : referenceCounts.video !== 1
+        ? "请添加 1 段动作参考视频"
+        : referenceCounts.image !== 1
+          ? "请添加 1 张形象参考图"
+              : motionVideoDuration != null && (motionVideoDuration < 3 || motionVideoDuration > motionMaxDuration)
+                ? `动作参考视频时长必须在 3-${motionMaxDuration} 秒之间`
+                : null;
+  const generationError = motionControl && d.prompt.length > 2500
+    ? "可灵动作控制提示词不能超过 2500 字符"
+    : motionCompatibilityError
+      ? motionCompatibilityError
+    : shotsEnabled && shotTotal !== d.duration
     ? `分镜总时长 ${shotTotal}s 必须等于视频时长 ${d.duration}s`
     : shotsEnabled && d.model === "v3-omni" && shots.some((shot) => shot.prompt.length > 512)
       ? "每段分镜提示词不能超过 512 字符"
@@ -1103,7 +1189,7 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
           ? omniCompatibilityError
       : inputMode === "references" && isSeedanceModel(d.model) && referenceCounts.audio > 0 && !referenceCounts.image && !referenceCounts.video
         ? "参考音频不能单独使用，请同时添加图片或视频"
-        : hasPrompt && inputMode === "keyframes" && needsFrame && !firstFrame && !upstreamImageCount
+        : hasPrompt && inputMode === "keyframes" && needsFrame && !firstFrame
     ? "请添加首帧图片"
     : hasPrompt && inputMode === "references" && needsFrame && !referenceCounts.image
       ? "该旧模型需要至少一张参考图作为首帧"
@@ -1120,9 +1206,31 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
   const mediaAreaHeight = generatorOnly ? VIDEO_GENERATOR_HEADER_HEIGHT : nodeHeight;
   const referenceAccept = assetOnly
     ? "video/mp4,video/quicktime,video/webm"
+    : d.model === "v3-motion-control"
+    ? KLING_MOTION_REFERENCE_ACCEPT
     : d.model === "v3-omni"
     ? inputMode === "keyframes" ? KLING_OMNI_KEYFRAME_ACCEPT : KLING_OMNI_REFERENCE_ACCEPT
     : inputMode === "keyframes" ? VIDEO_KEYFRAME_ACCEPT : VIDEO_REFERENCE_ACCEPT;
+
+  useEffect(() => {
+    if (!assetOnly || running || mediaFrameRate || !playbackUrl?.startsWith("/api/media/")) return;
+    const controller = new AbortController();
+    void fetch(`/api/video/metadata?url=${encodeURIComponent(playbackUrl)}`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return response.json() as Promise<{ width?: number; height?: number; frameRate?: number }>;
+      })
+      .then((metadata) => {
+        if (!metadata?.frameRate) return;
+        updateNode(id, {
+          mediaWidth: metadata.width || mediaWidth,
+          mediaHeight: metadata.height || mediaHeight,
+          mediaFrameRate: metadata.frameRate,
+        });
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [assetOnly, id, mediaFrameRate, mediaHeight, mediaWidth, playbackUrl, running, updateNode]);
 
   const uploadReferenceFiles = async (files: File[] | FileList) => {
     if (running || isGeneratedResult) return;
@@ -1143,14 +1251,16 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
     if (!candidates.length) {
       showToast(inputMode === "keyframes"
         ? `请选择 ${d.model === "v3-omni" ? "PNG 或 JPG" : "PNG、JPG 或 WebP"} 图片`
-        : d.model === "v3-omni" ? "请选择 PNG/JPG 图片或 MP4/MOV 视频" : "请选择 PNG/JPG/WebP、MP4/MOV 或 WAV/MP3 素材", "error");
+        : d.model === "v3-omni" || d.model === "v3-motion-control"
+          ? "请选择 PNG/JPG 图片或 MP4/MOV 视频"
+          : "请选择 PNG/JPG/WebP、MP4/MOV 或 WAV/MP3 素材", "error");
       return;
     }
 
     const metadataByFile = new Map<File, Awaited<ReturnType<typeof inspectReferenceFile>>>();
     try {
       await Promise.all(candidates.map(async ({ file, kind }) => {
-        metadataByFile.set(file, await inspectReferenceFile(file, kind, d.model));
+        metadataByFile.set(file, await inspectReferenceFile(file, kind, d.model, d.characterOrientation ?? "video"));
       }));
     } catch (error) {
       showToast(error instanceof Error ? error.message : "素材信息校验失败", "error");
@@ -1766,7 +1876,9 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
                 ? "MP4 · MOV · WEBM"
                 : inputMode === "keyframes"
                 ? "可直接拖入首帧和尾帧图片"
-                : d.model === "v3-omni" ? "可直接拖入 JPG/PNG 图片或 MP4/MOV 视频" : "可直接拖入图片、视频或音频作为参考"}
+                : d.model === "v3-omni" || d.model === "v3-motion-control"
+                  ? "可直接拖入 JPG/PNG 图片或 MP4/MOV 视频"
+                  : "可直接拖入图片、视频或音频作为参考"}
             </span>
           </div>
         )}
@@ -1807,18 +1919,6 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
                 </button>
               </div>
             </div>
-          </div>
-        ) : null}
-
-        {isGeneratedResult && playbackUrl && !running && (d.outputDuration || billingSummary || d.requestId) ? (
-          <div
-            className="pointer-events-none absolute bottom-2 left-2 flex max-w-[calc(100%-16px)] items-center gap-1.5 rounded-full border border-white/10 bg-ink/72 px-2.5 py-1 text-[9px] text-fg-dim backdrop-blur"
-            title={d.requestId ? `请求 ID：${d.requestId}` : undefined}
-          >
-            {d.outputDuration ? <span>{d.outputDuration}s</span> : null}
-            {d.outputDuration && billingSummary ? <span className="text-fg-mute/60">·</span> : null}
-            {billingSummary ? <span>消耗 {billingSummary}</span> : null}
-            {!d.outputDuration && !billingSummary && d.requestId ? <span>任务信息已记录</span> : null}
           </div>
         ) : null}
 
@@ -2040,28 +2140,34 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
           onMouseDown={(event) => event.stopPropagation()}
         >
           <div className="mb-3 flex items-center gap-2">
-            <div className="inline-flex rounded-full border border-line bg-ink/35 p-0.5" role="group" aria-label="视频参考模式">
-              {([
-                { value: "references", label: "多模态参考", icon: "Paperclip" },
-                { value: "keyframes", label: "首尾帧", icon: "Image" },
-              ] as const).map((mode) => (
-                <button
-                  key={mode.value}
-                  type="button"
-                  disabled={running}
-                  onClick={() => updateNode(id, { inputMode: mode.value })}
-                  className={cn(
-                    "flex h-7 items-center gap-1.5 rounded-full px-3 text-[10px] transition-[background-color,color,box-shadow] disabled:pointer-events-none disabled:opacity-40",
-                    inputMode === mode.value
-                      ? "bg-white/[0.11] text-fg shadow-[0_2px_8px_rgba(0,0,0,0.22)]"
-                      : "text-fg-mute hover:text-fg-dim",
-                  )}
-                >
-                  <Icon name={mode.icon} size={11} />
-                  {mode.label}
-                </button>
-              ))}
-            </div>
+            {motionControl ? (
+              <div className="inline-flex h-7 items-center gap-1.5 rounded-full border border-line bg-white/[0.06] px-3 text-[10px] text-fg-dim">
+                <Icon name="VideoCamera" size={11} /> 动作控制素材
+              </div>
+            ) : (
+              <div className="inline-flex rounded-full border border-line bg-ink/35 p-0.5" role="group" aria-label="视频参考模式">
+                {([
+                  { value: "references", label: "多模态参考", icon: "Paperclip" },
+                  { value: "keyframes", label: "首尾帧", icon: "Image" },
+                ] as const).map((mode) => (
+                  <button
+                    key={mode.value}
+                    type="button"
+                    disabled={running}
+                    onClick={() => updateNode(id, { inputMode: mode.value })}
+                    className={cn(
+                      "flex h-7 items-center gap-1.5 rounded-full px-3 text-[10px] transition-[background-color,color,box-shadow] disabled:pointer-events-none disabled:opacity-40",
+                      inputMode === mode.value
+                        ? "bg-white/[0.11] text-fg shadow-[0_2px_8px_rgba(0,0,0,0.22)]"
+                        : "text-fg-mute hover:text-fg-dim",
+                    )}
+                  >
+                    <Icon name={mode.icon} size={11} />
+                    {mode.label}
+                  </button>
+                ))}
+              </div>
+            )}
             {inputMode === "references" ? (
               <button
                 type="button"
@@ -2084,7 +2190,8 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
                 { role: "first_frame", label: "首帧" },
                 { role: "last_frame", label: "尾帧" },
               ] as const).map((slot, index) => {
-                const asset = keyframeAssets.find((item) => item.role === slot.role);
+                const asset = slot.role === "first_frame" ? firstFrame : lastFrame;
+                const manuallyAdded = asset && keyframeAssets.some((item) => item.id === asset.id);
                 return (
                   <div key={slot.role} className="contents">
                     {index ? <Icon name="ArrowRight" size={11} className="shrink-0 text-fg-mute/45" /> : null}
@@ -2106,7 +2213,7 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
                         </button>
                       )}
                       {asset ? <span className="pointer-events-none absolute bottom-1 left-1 rounded-full bg-ink/78 px-1.5 py-0.5 font-mono text-[8px] text-fg-dim backdrop-blur">{promptReferenceByKey.get(asset.id)?.token ?? slot.label}</span> : null}
-                      {asset ? (
+                      {manuallyAdded ? (
                         <button
                           type="button"
                           title={`移除${slot.label} ${asset.name}`}
@@ -2231,7 +2338,7 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
             />
           )}
 
-          {!isSeedanceModel(d.model) && d.model !== "v3-omni" ? (
+          {!isSeedanceModel(d.model) && d.model !== "v3-omni" && d.model !== "v3-motion-control" ? (
             <ImeSafeTextarea
               value={d.negativePrompt ?? ""}
               onValueChange={(nextValue) => updateNode(id, { negativePrompt: nextValue })}
@@ -2272,6 +2379,15 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
                             patch.shotModeExplicit = false;
                             patch.shotsEnabled = false;
                             if (d.aspectRatio === "智能" && !firstFrame && !referenceCounts.video) patch.aspectRatio = "16:9";
+                          }
+                          if (model.value === "v3-motion-control") {
+                            patch.inputMode = "references";
+                            patch.audioMode = "off";
+                            patch.sound = false;
+                            patch.keepOriginalSound = false;
+                            patch.characterOrientation = d.characterOrientation ?? "video";
+                            patch.shotMode = "single";
+                            patch.shotsEnabled = false;
                           }
                           updateNode(id, patch);
                           setPopover("none");

@@ -5,7 +5,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import type { PublicSettings, Settings } from "./types";
-import { DEFAULT_ROUTE } from "./o1key";
+import { DEFAULT_ROUTE, normalizeRouteName } from "./networkRoutes";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const SETTINGS_PATH = path.join(DATA_DIR, "settings.json");
@@ -23,6 +23,7 @@ export async function readSettings(): Promise<Settings> {
     return {
       ...DEFAULTS,
       ...parsed,
+      route: normalizeRouteName(parsed.route),
       defaults: { ...DEFAULTS.defaults, ...(parsed.defaults || {}) },
     };
   } catch {

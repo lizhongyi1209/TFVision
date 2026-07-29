@@ -2,6 +2,7 @@
 // Kling image2video / omni-video 或 Seedance 统一协议请求体并提交。
 //   v3 / v2-6  → POST /kling/v1/videos/image2video
 //   v3-omni    → POST /kling/omni-video/kling-3.0-omni (contents/settings/options)
+//   v3-motion-control → POST /kling/motion-control/kling-3.0 (contents/settings/options)
 //   seedance-* → POST /v1/video/generations
 
 import { NextResponse } from "next/server";
@@ -12,6 +13,7 @@ import {
   allowedVideoAspectRatios,
   allowedVideoDurations,
   allowedVideoResolutions,
+  buildKlingMotionControlGenerationBody,
   buildKlingOmniGenerationBody,
   buildSeedanceGenerationBody,
   extractVideoTaskId,
@@ -26,6 +28,7 @@ export const dynamic = "force-dynamic";
 
 const ENDPOINT_IMAGE2VIDEO = "/kling/v1/videos/image2video";
 const ENDPOINT_OMNI = "/kling/omni-video/kling-3.0-omni";
+const ENDPOINT_MOTION_CONTROL = "/kling/motion-control/kling-3.0";
 const ENDPOINT_UNIFIED = "/v1/video/generations";
 const MAX_BODY_BYTES = 128 * 1024;
 
@@ -111,12 +114,12 @@ export async function POST(req: Request) {
   }));
   const shotMode = p.shotMode === "auto" || p.shotMode === "custom" ? p.shotMode : "single";
 
-  if (!imageUrl && model !== "v3-omni" && !isSeedanceModel(model)) {
+  if (!imageUrl && model !== "v3-omni" && model !== "v3-motion-control" && !isSeedanceModel(model)) {
     return NextResponse.json({ error: "缺少起始帧图片" }, { status: 400 });
   }
   if (!prompt && !shots.length) return NextResponse.json({ error: "提示词不能为空" }, { status: 400 });
   if (shots.length) {
-    if (model === "v2-6" || isSeedanceModel(model)) {
+    if (model === "v2-6" || model === "v3-motion-control" || isSeedanceModel(model)) {
       return NextResponse.json({ error: `${model} 不支持分镜模式` }, { status: 400 });
     }
     if (shots.length > 6 || shots.some((shot) => !shot.prompt || !Number.isInteger(shot.duration) || shot.duration < 1)) {
@@ -145,7 +148,7 @@ export async function POST(req: Request) {
   if (!isSeedanceModel(model) && audioUrls.length) {
     return NextResponse.json({ error: "当前模型不支持参考音频" }, { status: 400 });
   }
-  if (!isSeedanceModel(model) && model !== "v3-omni" && videoUrls.length) {
+  if (!isSeedanceModel(model) && model !== "v3-omni" && model !== "v3-motion-control" && videoUrls.length) {
     return NextResponse.json({ error: "当前模型不支持参考视频" }, { status: 400 });
   }
   if (model === "v3-omni" && videoUrls.length > 1) {
@@ -153,6 +156,9 @@ export async function POST(req: Request) {
   }
   if (model === "v3-omni" && videoUrls.length && referType === "base" && shots.length) {
     return NextResponse.json({ error: "视频编辑（base）模式不支持分镜" }, { status: 400 });
+  }
+  if (model === "v3-motion-control" && audioUrls.length) {
+    return NextResponse.json({ error: "可灵动作控制不支持参考音频" }, { status: 400 });
   }
 
   const baseUrl = resolveBaseUrl(s.route);
@@ -163,7 +169,27 @@ export async function POST(req: Request) {
   let body: Record<string, unknown>;
   let endpoint: string;
 
-  if (isSeedanceModel(model)) {
+  if (model === "v3-motion-control") {
+    endpoint = ENDPOINT_MOTION_CONTROL;
+    try {
+      body = buildKlingMotionControlGenerationBody({
+        ...p,
+        model,
+        mode,
+        duration,
+        prompt,
+        sound,
+        refUrls,
+        videoUrls,
+        audioUrls,
+      });
+    } catch (error) {
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : "可灵动作控制参数无效" },
+        { status: 400 },
+      );
+    }
+  } else if (isSeedanceModel(model)) {
     endpoint = ENDPOINT_UNIFIED;
     try {
       body = buildSeedanceGenerationBody({

@@ -7,13 +7,8 @@ import { diagnosticFetch } from "./diagnostics.server";
 //   GET  {base}/async/v1/tasks/{task_id}     -> poll until success / failure
 // Server-only module (uses fetch + Buffer). Imported by route handlers.
 
-import type { RouteName } from "./types";
 import { GPT_IMAGE_2_SIZE_TABLE } from "./models";
-
-export const NETWORK_ROUTES: Record<RouteName, string> = {
-  全球加速: "https://api.o1key.cn",
-};
-export const DEFAULT_ROUTE: RouteName = "全球加速";
+export { resolveBaseUrl } from "./networkRoutes";
 
 export const SUBMIT_ENDPOINT = "/async/v1/generateImage";
 export const TASK_ENDPOINT = "/async/v1/tasks/";
@@ -52,10 +47,6 @@ const FAILURE = new Set([
 const RUNNING = new Set([
   "submitted", "queued", "pending", "running", "processing", "in_progress", "in-progress", "created",
 ]);
-
-export function resolveBaseUrl(route: RouteName): string {
-  return NETWORK_ROUTES[route] ?? NETWORK_ROUTES[DEFAULT_ROUTE];
-}
 
 /**
  * Translate a friendly model name + resolution + billing into the API model id.

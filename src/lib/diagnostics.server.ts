@@ -67,6 +67,38 @@ function append(entry: DiagnosticEntry) {
   if (store.length > MAX_ENTRIES) store.length = MAX_ENTRIES;
 }
 
+function diagnosticErrorDetails(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+
+  const sections: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  let depth = 0;
+
+  while (current instanceof Error && !seen.has(current) && depth < 6) {
+    seen.add(current);
+    const title = depth === 0 ? "Error" : `Cause ${depth}`;
+    const stack = current.stack?.trim() || `${current.name}: ${current.message}`;
+    const metadata = Object.fromEntries(
+      Object.getOwnPropertyNames(current)
+        .filter((key) => !["name", "message", "stack", "cause"].includes(key))
+        .map((key) => [key, sanitizeValue((current as unknown as Record<string, unknown>)[key], key)]),
+    );
+    const metadataText = Object.keys(metadata).length ? `\nMetadata:\n${JSON.stringify(metadata, null, 2)}` : "";
+    sections.push(`${title}:\n${stack}${metadataText}`);
+    current = (current as Error & { cause?: unknown }).cause;
+    depth += 1;
+  }
+
+  if (current !== undefined && current !== null && !(current instanceof Error)) {
+    sections.push(`Cause ${depth}:\n${String(sanitizeValue(current))}`);
+  } else if (current instanceof Error && seen.has(current)) {
+    sections.push(`Cause ${depth}:\n[Circular error cause]`);
+  }
+
+  return truncate(sections.join("\n\n")).value;
+}
+
 export function getDiagnostics(): DiagnosticEntry[] {
   return entries().map((entry) => ({ ...entry }));
 }
@@ -131,6 +163,7 @@ export async function diagnosticFetch(
       durationMs: Date.now() - startedAt,
       ok: false,
       error: message,
+      errorDetails: diagnosticErrorDetails(error),
       requestTruncated: request.truncated || undefined,
     });
     throw error;
