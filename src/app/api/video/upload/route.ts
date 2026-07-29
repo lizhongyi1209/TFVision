@@ -1,6 +1,5 @@
-// 视频素材上传代理：转发到上游网关的预签名上传（/v1/storage/presign），
-// 返回上游可抓取的公网 URL。移植自 TVision 的网关直传分支（无 R2 配置时的
-// 本地开发路径）。
+// 视频素材上传代理：从网关获取预签名地址，再使用无鉴权 PUT 直传 Cloudflare R2。
+// 业务侧只保存预签名响应中的 public_url。
 
 import { NextResponse } from "next/server";
 import { execFile } from "child_process";
@@ -10,6 +9,8 @@ import path from "path";
 import { promisify } from "util";
 import { readSettings } from "@/lib/settings";
 import { resolveBaseUrl } from "@/lib/o1key";
+import { diagnosticFetch } from "@/lib/diagnostics.server";
+import { buildR2UploadHeaders } from "@/lib/r2Upload";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import ffprobeInstaller from "@ffprobe-installer/ffprobe";
 
@@ -88,15 +89,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function parsePresign(payload: unknown): { uploadUrl: string; publicUrl: string; method: "PUT" | "POST"; provider: string; headers: Record<string, string> } {
+function parsePresign(payload: unknown): { uploadUrl: string; publicUrl: string; headers: Record<string, string> } {
   if (!isRecord(payload)) throw new Error("预签名响应格式异常");
   const candidates = [payload, payload.data, payload.result].filter(isRecord);
   for (const candidate of candidates) {
     const uploadUrl = candidate.upload_url ?? candidate.uploadUrl;
     const publicUrl = candidate.public_url ?? candidate.publicUrl ?? candidate.url;
     if (typeof uploadUrl !== "string" || typeof publicUrl !== "string") continue;
-    const rawMethod = String(candidate.method ?? "PUT").toUpperCase();
-    if (rawMethod !== "PUT" && rawMethod !== "POST") throw new Error(`不支持的上传方法: ${rawMethod}`);
     const headers = isRecord(candidate.headers)
       ? Object.fromEntries(
           Object.entries(candidate.headers)
@@ -104,7 +103,7 @@ function parsePresign(payload: unknown): { uploadUrl: string; publicUrl: string;
             .map(([k, v]) => [k, String(v)]),
         )
       : {};
-    return { uploadUrl, publicUrl, method: rawMethod, provider: String(candidate.provider ?? "r2").toLowerCase(), headers };
+    return { uploadUrl, publicUrl, headers };
   }
   throw new Error("预签名响应缺少上传地址或公网地址");
 }
@@ -168,36 +167,30 @@ export async function POST(req: Request) {
   const filename = `${crypto.randomUUID()}.${uploadExtension}`;
 
   try {
-    const presignRes = await fetch(`${baseUrl}/v1/storage/presign`, {
+    const presignRes = await diagnosticFetch(`${baseUrl}/v1/storage/presign`, {
       method: "POST",
       headers: { Authorization: `Bearer ${s.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ filename, content_type: uploadContentType, size: bytes.length }),
       signal: AbortSignal.timeout(10_000),
-    });
+    }, { category: "upload", label: `获取${spec.kind === "video" ? "视频" : spec.kind === "image" ? "图片" : "音频"}上传地址` });
     const presignText = await presignRes.text();
     if (!presignRes.ok) {
       return NextResponse.json({ error: `预签名失败 (${presignRes.status}): ${presignText.slice(0, 200)}` }, { status: 500 });
     }
     const presign = parsePresign(JSON.parse(presignText));
     const uploadUrl = new URL(presign.uploadUrl, baseUrl).toString();
-
-    const headers = { ...presign.headers };
-    const hasHeader = (n: string) => Object.keys(headers).some((k) => k.toLowerCase() === n);
-    if (!hasHeader("content-type")) headers["Content-Type"] = uploadContentType;
-    if (presign.provider === "local") {
-      if (!hasHeader("authorization")) headers.Authorization = `Bearer ${s.apiKey}`;
-    } else {
-      for (const key of Object.keys(headers)) {
-        if (key.toLowerCase() === "authorization") delete headers[key];
-      }
+    if (new URL(uploadUrl).protocol !== "https:") {
+      return NextResponse.json({ error: "R2 预签名上传地址必须使用 HTTPS" }, { status: 500 });
     }
 
-    const uploadRes = await fetch(uploadUrl, {
-      method: presign.method,
+    const headers = buildR2UploadHeaders(presign.headers, uploadContentType, bytes.length);
+
+    const uploadRes = await diagnosticFetch(uploadUrl, {
+      method: "PUT",
       headers,
       body: new Uint8Array(bytes),
       signal: AbortSignal.timeout(180_000),
-    });
+    }, { category: "upload", label: `上传${spec.kind === "video" ? "视频" : spec.kind === "image" ? "图片" : "音频"}素材` });
     if (![200, 201, 204].includes(uploadRes.status)) {
       const text = await uploadRes.text();
       return NextResponse.json({ error: `素材上传失败 (${uploadRes.status}): ${text.slice(0, 200)}` }, { status: 500 });

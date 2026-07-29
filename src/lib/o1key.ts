@@ -1,6 +1,8 @@
 // TypeScript port of the o1key Nano Banana async image API client.
 // Ported from TVision (src/lib/o1key.ts), which itself mirrors
 // scripts/generate_image.py of the o1key-nano-banana skill:
+
+import { diagnosticFetch } from "./diagnostics.server";
 //   POST {base}/async/v1/generateImage      -> task_id
 //   GET  {base}/async/v1/tasks/{task_id}     -> poll until success / failure
 // Server-only module (uses fetch + Buffer). Imported by route handlers.
@@ -293,14 +295,14 @@ export async function submitTask(
   const url = `${baseUrl}${SUBMIT_ENDPOINT}`;
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await diagnosticFetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
-    });
+    }, { category: "image", label: `提交图片生成 · ${body.model}` });
   } catch (e) {
     throw new Error(
       `网络连接失败，无法连接 ${url}：${(e as Error)?.message || e}。请检查网络。`,
@@ -328,7 +330,11 @@ export interface PollResult {
 
 export async function pollTaskOnce(baseUrl: string, apiKey: string, taskId: string): Promise<PollResult> {
   const url = `${baseUrl}${TASK_ENDPOINT}${encodeURIComponent(taskId)}`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+  const res = await diagnosticFetch(
+    url,
+    { headers: { Authorization: `Bearer ${apiKey}` } },
+    { category: "image", label: "查询图片任务" },
+  );
   const text = await res.text();
   if (res.status !== 200) throw new Error(`查询任务失败 HTTP ${res.status}: ${text.slice(0, 300)}`);
   let payload: unknown;

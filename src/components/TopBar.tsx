@@ -2,7 +2,7 @@
 
 // 顶栏（对齐 libTV 布局）：左 = Logo + 画布切换；右 = 历史、设置。
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useStudio } from "@/lib/store";
 import { Icon } from "./icons";
 import { cn } from "@/lib/utils";
@@ -37,7 +37,7 @@ function BoardSwitcher() {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex h-9 items-center gap-1.5 rounded-control border border-line bg-panel/95 px-3 text-[13px] text-fg backdrop-blur-xl transition-colors hover:border-line-2"
+        className="flex h-9 items-center gap-1.5 rounded-r-[11px] border-l border-line px-3 text-[13px] text-fg transition-colors hover:bg-white/[0.045]"
       >
         {active?.name ?? "画布"}
         <Icon name="CaretDown" size={11} className="text-fg-mute" />
@@ -128,19 +128,136 @@ function BoardSwitcher() {
   );
 }
 
-export function TopBar({ agentOpen, onAgentToggle }: { agentOpen: boolean; onAgentToggle: () => void }) {
+type BalanceState =
+  | { status: "idle" | "loading" }
+  | { status: "success"; display: string; rawQuota: number | null; unlimited: boolean }
+  | { status: "error"; message: string };
+
+function TokenBalance({ onOpenSettings }: { onOpenSettings: () => void }) {
+  const settings = useStudio((s) => s.settings);
+  const [balance, setBalance] = useState<BalanceState>({ status: "idle" });
+
+  const refresh = useCallback(async () => {
+    if (!settings?.hasApiKey) {
+      setBalance({ status: "idle" });
+      return;
+    }
+    setBalance((current) => current.status === "success" ? current : { status: "loading" });
+    try {
+      const response = await fetch("/api/account/balance", { cache: "no-store" });
+      const payload = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        display?: string;
+        rawQuota?: number | null;
+        unlimited?: boolean;
+        error?: string;
+      };
+      if (!response.ok || !payload.ok || !payload.display) {
+        throw new Error(payload.error || "暂时无法获取余额");
+      }
+      setBalance({
+        status: "success",
+        display: payload.display,
+        rawQuota: payload.rawQuota ?? null,
+        unlimited: payload.unlimited === true,
+      });
+    } catch (error) {
+      setBalance((current) => current.status === "success"
+        ? current
+        : { status: "error", message: error instanceof Error ? error.message : "暂时无法获取余额" });
+    }
+  }, [settings]);
+
+  useEffect(() => {
+    if (!settings?.hasApiKey) {
+      setBalance({ status: "idle" });
+      return;
+    }
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 60_000);
+    const refreshOnFocus = () => void refresh();
+    window.addEventListener("focus", refreshOnFocus);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshOnFocus);
+    };
+  }, [refresh, settings?.hasApiKey]);
+
+  const hasApiKey = settings?.hasApiKey === true;
+  const title = !hasApiKey
+    ? "配置 API 令牌"
+    : balance.status === "success"
+    ? balance.unlimited
+      ? "当前令牌为无限额度 · 点击管理令牌"
+      : `令牌剩余额度${balance.rawQuota != null ? `（${balance.rawQuota.toLocaleString("zh-CN")} quota）` : ""} · 点击管理令牌`
+    : balance.status === "error"
+      ? `${balance.message} · 点击检查令牌设置`
+      : "正在查询令牌余额";
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        if (hasApiKey) void refresh();
+        onOpenSettings();
+      }}
+      title={title}
+      aria-label={title}
+      className={cn(
+        "group flex h-9 min-w-[132px] items-center justify-center gap-2 rounded-control border px-3 font-mono text-[13px] font-semibold tabular-nums backdrop-blur-xl transition-all active:scale-[0.98]",
+        !hasApiKey
+          ? "border-accent/60 bg-accent/15 text-accent hover:border-accent/80 hover:bg-accent/20"
+          : balance.status === "success"
+          ? "border-[#b8ff62]/35 bg-[#b8ff62]/10 text-[#c7ff80] shadow-[0_0_24px_rgba(184,255,98,0.09)] hover:border-[#b8ff62]/60 hover:bg-[#b8ff62]/15"
+          : balance.status === "error"
+            ? "border-danger/35 bg-danger/10 text-danger hover:border-danger/60"
+            : "border-line bg-panel/95 text-fg-mute",
+      )}
+    >
+      <Icon
+        name={!hasApiKey ? "Gear" : balance.status === "error" ? "Warning" : "Wallet"}
+        size={15}
+        weight={hasApiKey && balance.status === "success" ? "fill" : "regular"}
+        className={balance.status === "loading" ? "animate-pulse" : undefined}
+      />
+      {!hasApiKey ? (
+        <span className="font-sans text-[12px] font-medium">配置令牌</span>
+      ) : balance.status === "success" ? (
+        <span><span className="mr-1 font-sans text-[11px] font-medium text-[#c7ff80]/70">余额</span>{balance.display}</span>
+      ) : balance.status === "error" ? (
+        <span className="font-sans text-[12px]">余额获取失败</span>
+      ) : (
+        <span className="font-sans text-[12px] font-medium">余额查询中</span>
+      )}
+      {hasApiKey ? (
+        <span className="ml-0.5 flex h-5 items-center border-l border-current/20 pl-2 opacity-60 transition-opacity group-hover:opacity-100">
+          <Icon name="Gear" size={12} />
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+export function TopBar({
+  agentOpen,
+  onAgentToggle,
+  onDiagnosticsOpen,
+}: {
+  agentOpen: boolean;
+  onAgentToggle: () => void;
+  onDiagnosticsOpen: () => void;
+}) {
   const setSettingsOpen = useStudio((s) => s.setSettingsOpen);
   const setHistoryOpen = useStudio((s) => s.setHistoryOpen);
-  const settings = useStudio((s) => s.settings);
 
   return (
     <>
       {/* Left cluster */}
-      <div className="pointer-events-auto absolute left-4 top-4 z-50 flex items-center gap-2">
+      <div className="pointer-events-auto absolute left-4 top-4 z-50 flex items-center rounded-control border border-line bg-panel/95 shadow-[0_8px_24px_rgba(0,0,0,0.18)] backdrop-blur-xl transition-colors hover:border-line-2">
         <div
           title="TFvision"
           aria-label="TFvision"
-          className="flex h-9 w-9 items-center justify-center rounded-control border border-line bg-panel/95 backdrop-blur-xl"
+          className="flex h-9 w-9 items-center justify-center"
         >
           <span className="flex h-5 w-5 items-center justify-center rounded-md bg-accent/90 text-[11px] font-bold text-ink">
             TF
@@ -151,6 +268,15 @@ export function TopBar({ agentOpen, onAgentToggle }: { agentOpen: boolean; onAge
 
       {/* Right cluster */}
       <div className="pointer-events-auto absolute right-4 top-4 z-50 flex items-center gap-2">
+        <TokenBalance onOpenSettings={() => setSettingsOpen(true)} />
+        <button
+          type="button"
+          onClick={onDiagnosticsOpen}
+          className="flex h-9 items-center gap-1.5 rounded-control border border-line bg-panel/95 px-3 text-[13px] text-fg-dim backdrop-blur-xl transition-colors hover:border-line-2 hover:text-fg active:scale-[0.98]"
+        >
+          <Icon name="Code" size={14} />
+          诊断台
+        </button>
         <button
           type="button"
           onClick={() => setHistoryOpen(true)}
@@ -158,19 +284,6 @@ export function TopBar({ agentOpen, onAgentToggle }: { agentOpen: boolean; onAge
         >
           <Icon name="ClockCounterClockwise" size={14} />
           资产管理
-        </button>
-        <button
-          type="button"
-          onClick={() => setSettingsOpen(true)}
-          className={cn(
-            "flex h-9 items-center gap-1.5 rounded-control border px-3 text-[13px] backdrop-blur transition-colors",
-            settings && !settings.hasApiKey
-              ? "border-accent/60 bg-accent/15 text-accent"
-              : "border-line bg-panel/95 text-fg-dim backdrop-blur-xl hover:border-line-2 hover:text-fg",
-          )}
-        >
-          <Icon name="Gear" size={14} />
-          {settings && !settings.hasApiKey ? "配置令牌" : "设置"}
         </button>
         <button
           type="button"

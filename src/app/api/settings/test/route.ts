@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { readSettings } from "@/lib/settings";
 import { resolveBaseUrl, TASK_ENDPOINT } from "@/lib/o1key";
+import { diagnosticFetch } from "@/lib/diagnostics.server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,7 +21,11 @@ export async function POST(req: Request) {
 
   const url = `${baseUrl}${TASK_ENDPOINT}connectivity-probe-000`;
   try {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+    const res = await diagnosticFetch(
+      url,
+      { headers: { Authorization: `Bearer ${apiKey}` } },
+      { category: "settings", label: "测试网关连接" },
+    );
     if (res.status === 401 || res.status === 403) {
       return NextResponse.json({
         ok: false,

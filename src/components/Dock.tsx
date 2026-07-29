@@ -15,6 +15,7 @@ const SHORTCUTS: { keys: string; desc: string }[] = [
   { keys: "拖拽 ⊕ 到另一节点", desc: "连接两个节点" },
   { keys: "Ctrl + Enter", desc: "节点内快速生成" },
   { keys: "Delete / Backspace", desc: "删除选中的节点或连线" },
+  { keys: "Ctrl / Cmd + Z", desc: "恢复最近误删的节点" },
   { keys: "滚轮 / 触控板", desc: "缩放画布" },
   { keys: "右键拖拽 / 抓手拖拽", desc: "平移画布" },
   { keys: "移动工具下拖拽空白", desc: "框选多个节点" },

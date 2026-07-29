@@ -32,6 +32,12 @@ import {
   type WorkspaceFile,
 } from "./types";
 import { downscaleImageSrc, fakeProgressCurve } from "./utils";
+import { shouldUseConnectedImageAsFirstFrame } from "./videoGateway";
+import {
+  captureNodeDeletion,
+  restoreNodeDeletion,
+  type NodeDeletionSnapshot,
+} from "./nodeDeletionUndo";
 import {
   forgetVideoReferenceBlob,
   readVideoReferenceBlob,
@@ -305,6 +311,10 @@ function migrateLegacyBoard(rawNodes: AppNode[], rawEdges: Edge[]) {
 const pollTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const submitControllers = new Map<string, AbortController>();
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+const MAX_NODE_DELETION_HISTORY = 30;
+const nodeDeletionHistory = new Map<string, NodeDeletionSnapshot<AppNode, Edge>[]>();
+const pendingRemovedEdges = new Map<string, Edge[]>();
+const pendingRemovedEdgeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 interface NodeClipboardSnapshot {
   nodes: AppNode[];
@@ -414,6 +424,63 @@ function clearImageRuntime(nodeId: string) {
   clearPoll(nodeId);
   submitControllers.get(nodeId)?.abort();
   submitControllers.delete(nodeId);
+}
+
+function disposeDeletionSnapshot(snapshot: NodeDeletionSnapshot<AppNode, Edge>) {
+  const removedIds = new Set(snapshot.removedNodeIds);
+  for (const node of snapshot.nodes) {
+    if (removedIds.has(node.id)) clearVideoReferenceFiles(node);
+  }
+}
+
+function rememberNodeDeletion(boardId: string, nodes: AppNode[], edges: Edge[], nodeIds: string[]) {
+  const snapshot = captureNodeDeletion(nodes, edges, nodeIds);
+  if (!snapshot) return null;
+  const history = nodeDeletionHistory.get(boardId) ?? [];
+  history.push(snapshot);
+  while (history.length > MAX_NODE_DELETION_HISTORY) {
+    const discarded = history.shift();
+    if (discarded) disposeDeletionSnapshot(discarded);
+  }
+  nodeDeletionHistory.set(boardId, history);
+  return snapshot;
+}
+
+function rememberPendingRemovedEdges(boardId: string, edges: Edge[]) {
+  if (!edges.length) return;
+  const merged = new Map((pendingRemovedEdges.get(boardId) ?? []).map((edge) => [edge.id, edge]));
+  for (const edge of edges) merged.set(edge.id, edge);
+  pendingRemovedEdges.set(boardId, Array.from(merged.values()));
+  const previousTimer = pendingRemovedEdgeTimers.get(boardId);
+  if (previousTimer) clearTimeout(previousTimer);
+  pendingRemovedEdgeTimers.set(boardId, setTimeout(() => {
+    pendingRemovedEdges.delete(boardId);
+    pendingRemovedEdgeTimers.delete(boardId);
+  }, 100));
+}
+
+function takePendingRemovedEdges(boardId: string) {
+  const edges = pendingRemovedEdges.get(boardId) ?? [];
+  pendingRemovedEdges.delete(boardId);
+  const timer = pendingRemovedEdgeTimers.get(boardId);
+  if (timer) clearTimeout(timer);
+  pendingRemovedEdgeTimers.delete(boardId);
+  return edges;
+}
+
+function clearNodeDeletionHistory(boardId?: string) {
+  const boardIds = boardId
+    ? [boardId]
+    : Array.from(new Set([...nodeDeletionHistory.keys(), ...pendingRemovedEdges.keys()]));
+  for (const id of boardIds) {
+    const history = nodeDeletionHistory.get(id) ?? [];
+    for (const snapshot of history) disposeDeletionSnapshot(snapshot);
+    nodeDeletionHistory.delete(id);
+    pendingRemovedEdges.delete(id);
+    const timer = pendingRemovedEdgeTimers.get(id);
+    if (timer) clearTimeout(timer);
+    pendingRemovedEdgeTimers.delete(id);
+  }
 }
 
 async function srcToRefDataUrl(src: string): Promise<string> {
@@ -558,6 +625,7 @@ interface StudioState {
   onConnect: (conn: Connection) => void;
   addNode: (kind: NodeKind, position: XYPosition, init?: Record<string, unknown>) => string;
   removeNode: (id: string) => void;
+  undoDelete: () => boolean;
   removeEdge: (id: string) => void;
   updateNode: (id: string, patch: Record<string, unknown>) => void;
   duplicateNode: (id: string) => void;
@@ -619,7 +687,14 @@ export const useStudio = create<StudioState>((set, get) => ({
   tool: "hand",
 
   onNodesChange: (changes) => {
-    const currentNodes = get().nodes;
+    const state = get();
+    const currentNodes = state.nodes;
+    const removedNodeIds = changes.flatMap((change) => change.type === "remove" ? [change.id] : []);
+    if (removedNodeIds.length) {
+      const deletionEdges = new Map(state.edges.map((edge) => [edge.id, edge]));
+      for (const edge of takePendingRemovedEdges(state.activeBoardId)) deletionEdges.set(edge.id, edge);
+      rememberNodeDeletion(state.activeBoardId, currentNodes, Array.from(deletionEdges.values()), removedNodeIds);
+    }
     const removedGroupIds = changes.flatMap((change) => {
       if (change.type !== "remove") return [];
       return currentNodes.some((node) => node.id === change.id && node.type === "group") ? [change.id] : [];
@@ -631,19 +706,31 @@ export const useStudio = create<StudioState>((set, get) => ({
     const nonGroupChanges = changes.filter(
       (change) => !(change.type === "remove" && removedGroupIds.includes(change.id)),
     );
-    set({ nodes: applyNodeChanges(nonGroupChanges, preparedNodes) as AppNode[] });
+    const nextNodes = applyNodeChanges(nonGroupChanges, preparedNodes) as AppNode[];
+    const removedIds = new Set(removedNodeIds);
+    const nextEdges = removedIds.size
+      ? state.edges.filter((edge) => !removedIds.has(edge.source) && !removedIds.has(edge.target))
+      : state.edges;
+    set({ nodes: nextNodes, edges: nextEdges });
     // Node removal via keyboard lands here too — stop any orphaned polls.
     for (const c of changes) {
       if (c.type === "remove") {
         clearImageRuntime(c.id);
-        clearVideoReferenceFiles(currentNodes.find((node) => node.id === c.id));
       }
     }
     get().scheduleSave();
   },
 
   onEdgesChange: (changes) => {
-    set({ edges: applyEdgeChanges(changes, get().edges) });
+    const state = get();
+    const removedIds = new Set(changes.flatMap((change) => change.type === "remove" ? [change.id] : []));
+    if (removedIds.size) {
+      rememberPendingRemovedEdges(
+        state.activeBoardId,
+        state.edges.filter((edge) => removedIds.has(edge.id)),
+      );
+    }
+    set({ edges: applyEdgeChanges(changes, state.edges) });
     get().scheduleSave();
   },
 
@@ -691,19 +778,48 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
 
   removeNode: (id) => {
-    const node = get().nodes.find((candidate) => candidate.id === id);
+    const state = get();
+    const node = state.nodes.find((candidate) => candidate.id === id);
+    if (!node) return;
+    rememberNodeDeletion(state.activeBoardId, state.nodes, state.edges, [id]);
     if (node?.type === "group") {
-      set({ nodes: ungroupNodes(get().nodes, id) });
+      set({ nodes: ungroupNodes(state.nodes, id) });
       get().scheduleSave();
       return;
     }
     clearImageRuntime(id);
-    clearVideoReferenceFiles(node);
     set({
-      nodes: get().nodes.filter((n) => n.id !== id),
-      edges: get().edges.filter((e) => e.source !== id && e.target !== id),
+      nodes: state.nodes.filter((n) => n.id !== id),
+      edges: state.edges.filter((e) => e.source !== id && e.target !== id),
     });
     get().scheduleSave();
+  },
+
+  undoDelete: () => {
+    const state = get();
+    const history = nodeDeletionHistory.get(state.activeBoardId);
+    const snapshot = history?.pop();
+    if (!snapshot) return false;
+    if (!history?.length) nodeDeletionHistory.delete(state.activeBoardId);
+
+    const restored = restoreNodeDeletion(state.nodes, state.edges, snapshot);
+    set(restored);
+    for (const nodeId of snapshot.removedNodeIds) {
+      const node = restored.nodes.find((candidate) => candidate.id === nodeId);
+      if (!node) continue;
+      if (node.type === "imageAsset") {
+        const data = node.data as ImageNodeData;
+        if (data.status === "running" && data.jobIds?.length) {
+          pollImageNode(node.id, data.jobIds, set, get, data.submissionFailures ?? 0, data.jobLabels);
+        }
+      } else if (node.type === "videoAsset") {
+        const data = node.data as VideoNodeData;
+        if (data.status === "running" && data.taskId) pollVideoNode(node.id, data.taskId, data.prompt, set, get);
+      }
+    }
+    get().scheduleSave();
+    get().showToast(`已恢复 ${snapshot.removedNodeIds.length} 个节点`, "success");
+    return true;
   },
 
   removeEdge: (id) => {
@@ -1511,8 +1627,11 @@ export const useStudio = create<StudioState>((set, get) => ({
           .map((asset) => asset.url);
         const connectedFirstFrame = resolvedUpstreamImages[0]?.url;
         const useConnectedAsFirstFrame = Boolean(connectedFirstFrame)
-          && (data.model === "v3-omni" || needsFrame || inputMode === "keyframes")
-          && !resolvedKeyframes.some((asset) => asset.role === "first_frame");
+          && shouldUseConnectedImageAsFirstFrame(
+            data.model,
+            inputMode,
+            resolvedKeyframes.some((asset) => asset.role === "first_frame"),
+          );
         const remainingConnectedRefs = resolvedUpstreamImages.slice(useConnectedAsFirstFrame ? 1 : 0).map((asset) => asset.url);
         const imageRefs = [...ownImageRefs, ...remainingConnectedRefs];
         const videoRefs = resolvedReferences.filter((asset) => asset.kind === "video").map((asset) => asset.url);
@@ -1608,6 +1727,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   // ── Workspace persistence ──────────────────────────────────────────────────
 
   loadWorkspace: async () => {
+    clearNodeDeletionHistory();
     try {
       const res = await fetch("/api/boards");
       const file = (await res.json()) as WorkspaceFile | null;
@@ -1798,6 +1918,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       return;
     }
     const rest = s.boards.filter((b) => b.id !== id);
+    clearNodeDeletionHistory(id);
     const boardsData = { ...s.boardsData };
     delete boardsData[id];
     if (id === s.activeBoardId) {

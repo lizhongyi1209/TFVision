@@ -6,6 +6,8 @@ import {
   allowedVideoResolutions,
   buildKlingOmniGenerationBody,
   buildSeedanceGenerationBody,
+  extractVideoResultMetadata,
+  shouldUseConnectedImageAsFirstFrame,
   supportsShots,
   videoStatusEndpoint,
 } from "../videoGateway.ts";
@@ -41,6 +43,34 @@ test("可灵 Omni 与 Seedance 使用不同画面比例白名单", () => {
   assert.deepEqual(allowedVideoAspectRatios("seedance-2.0"), ["智能", "16:9", "4:3", "1:1", "3:4", "9:16"]);
   assert.equal(supportsShots("v3-omni"), true);
   assert.equal(supportsShots("seedance-2.0"), false);
+});
+
+test("可灵 Omni 紧凑成功响应会保留视频、时长、计费和请求 ID", () => {
+  const result = extractVideoResultMetadata({
+    task_id: "task_SpcKYldewyZpFgqwWdplUV5ViGXFiP19",
+    status: "SUCCESS",
+    video_url: "https://cdn.example.com/result.mp4",
+    duration: 5.041,
+    model: "kling-3.0-omni",
+    cost: "4.5",
+    request_id: "9808ba3e-0b06-4b0f-8ae0-6c7ea08070b9",
+  }, "task_SpcKYldewyZpFgqwWdplUV5ViGXFiP19");
+
+  assert.deepEqual(result, {
+    videoUrl: "https://cdn.example.com/result.mp4",
+    watermarkUrl: undefined,
+    outputDuration: "5.041",
+    requestId: "9808ba3e-0b06-4b0f-8ae0-6c7ea08070b9",
+    billing: [{ charge_type: "unit", amount: "4.5" }],
+  });
+});
+
+test("只有首尾帧模式或旧模型会把连线图片作为首帧", () => {
+  assert.equal(shouldUseConnectedImageAsFirstFrame("v3-omni", "references", false), false);
+  assert.equal(shouldUseConnectedImageAsFirstFrame("v3-omni", "keyframes", false), true);
+  assert.equal(shouldUseConnectedImageAsFirstFrame("v3", "references", false), true);
+  assert.equal(shouldUseConnectedImageAsFirstFrame("v2-6", "references", false), true);
+  assert.equal(shouldUseConnectedImageAsFirstFrame("v3", "references", true), false);
 });
 
 test("Seedance 请求体透传专属参数和多模态素材", () => {

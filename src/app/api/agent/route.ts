@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { readSettings } from "@/lib/settings";
 import { resolveBaseUrl } from "@/lib/o1key";
+import { diagnosticFetch } from "@/lib/diagnostics.server";
 import { ASPECT_RATIOS, GPT_IMAGE_2_RATIOS, MODELS, resolutionsFor } from "@/lib/models";
 import type {
   AgentImagePlan,
@@ -411,7 +412,7 @@ function friendlyGatewayError(status: number, detail: string, endpoint: string) 
 }
 
 async function fetchGateway(url: string, apiKey: string, body: Record<string, unknown>) {
-  const response = await fetch(url, {
+  const response = await diagnosticFetch(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -419,7 +420,7 @@ async function fetchGateway(url: string, apiKey: string, body: Record<string, un
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(AGENT_TIMEOUT_MS),
-  });
+  }, { category: "agent", label: "提交 Agent 请求" });
   const raw = await response.text();
   let payload: GatewayPayload | undefined;
   try {

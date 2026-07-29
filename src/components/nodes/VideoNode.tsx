@@ -3,7 +3,7 @@
 // 视频节点：画布上只保留预览卡片；选中预览后，在卡片下方展开独立的
 // 生成设置对话框。交互层级与图片节点保持一致。
 
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useKeyPress, useReactFlow, type NodeProps } from "@xyflow/react";
 import type { AppNode } from "@/lib/store";
 import { useStudio } from "@/lib/store";
@@ -22,7 +22,12 @@ import type {
   ShotSegment,
 } from "@/lib/types";
 import { VIDEO_MODELS, VIDEO_MODEL_RESOLUTIONS, videoDurationsFor } from "@/lib/models";
-import { allowedVideoAspectRatios, isSeedanceModel, supportsShots } from "@/lib/videoGateway";
+import {
+  allowedVideoAspectRatios,
+  isSeedanceModel,
+  shouldUseConnectedImageAsFirstFrame,
+  supportsShots,
+} from "@/lib/videoGateway";
 import { cn, createMediaNodeSizing, fitMediaNodeSize } from "@/lib/utils";
 import {
   forgetVideoReferenceBlob,
@@ -369,6 +374,7 @@ function PromptMentionTextarea({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [displayValue, setDisplayValue] = useState(value);
   const [scrollTop, setScrollTop] = useState(0);
+  const [scrollbarWidth, setScrollbarWidth] = useState(0);
   const [mention, setMention] = useState<ReturnType<typeof activeVideoPromptMention>>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const filteredReferences = mention
@@ -393,6 +399,28 @@ function PromptMentionTextarea({
   useEffect(() => {
     setDisplayValue(value);
   }, [value]);
+
+  const syncScrollbarWidth = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const computed = window.getComputedStyle(textarea);
+    const borderWidth = Number.parseFloat(computed.borderLeftWidth)
+      + Number.parseFloat(computed.borderRightWidth);
+    const nextWidth = Math.max(0, textarea.offsetWidth - textarea.clientWidth - borderWidth);
+    setScrollbarWidth((current) => Math.abs(current - nextWidth) < 0.25 ? current : nextWidth);
+  }, []);
+
+  useLayoutEffect(() => {
+    syncScrollbarWidth();
+  }, [displayValue, boundReferences.length, syncScrollbarWidth]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(syncScrollbarWidth);
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [syncScrollbarWidth]);
 
   const refreshMention = (nextValue: string) => {
     const caret = textareaRef.current?.selectionStart ?? nextValue.length;
@@ -476,20 +504,25 @@ function PromptMentionTextarea({
           "pointer-events-none absolute inset-px z-[5] overflow-hidden whitespace-pre-wrap break-words text-fg",
           overlayClassName,
         )}
-        style={boundReferences.length ? { paddingTop: 49 } : undefined}
+        style={{
+          right: 1 + scrollbarWidth,
+          ...(boundReferences.length ? { paddingTop: 49 } : {}),
+        }}
       >
         <div
           style={{
             transform: `translateY(-${scrollTop}px)`,
+            // Native textareas use text-rendering:auto. Matching it here keeps
+            // the colored mirror layer aligned with the real caret.
+            textRendering: "auto",
           }}
         >
           {highlightedParts.map((part, index) => {
             const reference = referenceByToken.get(part);
             return reference ? (
-              <span key={`${part}-${index}`} className={cn("font-medium", promptReferenceTone(reference))}>{part}</span>
+              <span key={`${part}-${index}`} className={promptReferenceTone(reference)}>{part}</span>
             ) : <span key={`text-${index}`}>{part}</span>;
           })}
-          {"\u200b"}
         </div>
       </div>
       {boundReferences.length ? (
@@ -958,8 +991,7 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
   const needsFrame = d.model === "v3" || d.model === "v2-6";
   const connectedFirstFrame = connectedImageAssets[0];
   const useConnectedAsFirstFrame = Boolean(connectedFirstFrame)
-    && (d.model === "v3-omni" || needsFrame || inputMode === "keyframes")
-    && !firstFrame;
+    && shouldUseConnectedImageAsFirstFrame(d.model, inputMode, Boolean(firstFrame));
   const promptFirstFrame = firstFrame ?? (useConnectedAsFirstFrame ? connectedFirstFrame : undefined);
   const promptReferenceInputs: VideoPromptReferenceInput[] = [
     ...(promptFirstFrame
@@ -1643,7 +1675,6 @@ export const VideoNode = memo(function VideoNode({ id, type, selected, dragging,
                   : "可连接图片、视频素材或文本作为输入"}
               </span>
             </span>
-            <span className="rounded-full border border-white/[0.08] px-2 py-1 text-[9px] tracking-wide text-fg-mute">PROCESS</span>
           </div>
         ) : playbackUrl ? (
           <>

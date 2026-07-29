@@ -29,6 +29,7 @@ import { SettingsPanel } from "./SettingsPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { Toaster } from "./Toaster";
 import { AgentPanel } from "./AgentPanel";
+import { DiagnosticConsole } from "./DiagnosticConsole";
 import { Icon } from "./icons";
 import { fileToDataURL, fitMediaNodeSize } from "@/lib/utils";
 import { rememberVideoReferenceBlob } from "@/lib/videoReferenceStorage";
@@ -89,6 +90,7 @@ function GroupSelectionToolbar() {
 
 function Canvas() {
   const [agentOpen, setAgentOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const nodes = useStudio((s) => s.nodes);
   const edges = useStudio((s) => s.edges);
   const onNodesChange = useStudio((s) => s.onNodesChange);
@@ -100,6 +102,7 @@ function Canvas() {
   const addNode = useStudio((s) => s.addNode);
   const copySelectedNodes = useStudio((s) => s.copySelectedNodes);
   const pasteCopiedNodes = useStudio((s) => s.pasteCopiedNodes);
+  const undoDelete = useStudio((s) => s.undoDelete);
   const loadWorkspace = useStudio((s) => s.loadWorkspace);
   const fetchSettings = useStudio((s) => s.fetchSettings);
   const saveWorkspaceNow = useStudio((s) => s.saveWorkspaceNow);
@@ -112,7 +115,7 @@ function Canvas() {
     void loadWorkspace();
   }, [fetchSettings, loadWorkspace]);
 
-  // V = 移动工具，H = 抓手；Ctrl/Cmd+C、Ctrl/Cmd+V 复制粘贴节点。
+  // V = 移动工具，H = 抓手；Ctrl/Cmd+C、Ctrl/Cmd+V 复制粘贴，Ctrl/Cmd+Z 撤销删除。
   // 输入框聚焦时保留原生文本编辑快捷键。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -130,13 +133,18 @@ function Canvas() {
         void pasteCopiedNodes();
         return;
       }
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && key === "z") {
+        e.preventDefault();
+        undoDelete();
+        return;
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "v" || e.key === "V") setTool("move");
       if (e.key === "h" || e.key === "H") setTool("hand");
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [copySelectedNodes, pasteCopiedNodes, setTool]);
+  }, [copySelectedNodes, pasteCopiedNodes, setTool, undoDelete]);
 
   // Flush pending save when leaving.
   useEffect(() => {
@@ -299,7 +307,11 @@ function Canvas() {
         </ReactFlow>
 
         <TemplateBar />
-        <TopBar agentOpen={agentOpen} onAgentToggle={() => setAgentOpen((current) => !current)} />
+        <TopBar
+          agentOpen={agentOpen}
+          onAgentToggle={() => setAgentOpen((current) => !current)}
+          onDiagnosticsOpen={() => setDiagnosticsOpen(true)}
+        />
         <Dock />
         <AddNodeMenu />
         <HistoryPanel />
@@ -307,6 +319,7 @@ function Canvas() {
         <Toaster />
       </main>
       <AgentPanel open={agentOpen} onClose={() => setAgentOpen(false)} />
+      <DiagnosticConsole open={diagnosticsOpen} onClose={() => setDiagnosticsOpen(false)} />
     </div>
   );
 }

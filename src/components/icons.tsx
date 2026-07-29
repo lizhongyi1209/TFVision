@@ -54,6 +54,7 @@ import {
   TShirt,
   UploadSimple,
   VideoCamera,
+  Wallet,
   Warning,
   X,
   ClockCounterClockwise,
@@ -132,6 +133,7 @@ const REGISTRY: Record<string, ComponentType<IconProps>> = {
   TShirt,
   UploadSimple,
   VideoCamera,
+  Wallet,
   Warning,
   X,
 };

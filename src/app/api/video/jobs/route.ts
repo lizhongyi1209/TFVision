@@ -19,6 +19,7 @@ import {
   isVideoModel,
 } from "@/lib/videoGateway";
 import type { VideoJobParams } from "@/lib/types";
+import { diagnosticFetch } from "@/lib/diagnostics.server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -240,12 +241,12 @@ export async function POST(req: Request) {
   }
 
   const submitUrl = `${baseUrl}${endpoint}`;
-  const submitRes = await fetch(submitUrl, {
+  const submitRes = await diagnosticFetch(submitUrl, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(45_000),
-  }).catch((e) => e as Error);
+  }, { category: "video", label: `提交视频生成 · ${model}` }).catch((e) => e as Error);
   if (submitRes instanceof Error) {
     return NextResponse.json({ error: `网络连接失败: ${submitRes.message}` }, { status: 500 });
   }

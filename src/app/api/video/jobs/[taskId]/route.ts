@@ -3,7 +3,8 @@
 import { NextResponse } from "next/server";
 import { readSettings } from "@/lib/settings";
 import { resolveBaseUrl } from "@/lib/o1key";
-import { extractGeneratedVideoUrl, isVideoModel, videoStatusEndpoint } from "@/lib/videoGateway";
+import { extractVideoResultMetadata, isVideoModel, videoStatusEndpoint } from "@/lib/videoGateway";
+import { diagnosticFetch } from "@/lib/diagnostics.server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -130,7 +131,11 @@ export async function GET(req: Request, ctx: { params: Promise<{ taskId: string 
 
   let response: Response;
   try {
-    response = await fetch(requestedUrl, { headers, signal: AbortSignal.timeout(15_000) });
+    response = await diagnosticFetch(
+      requestedUrl,
+      { headers, signal: AbortSignal.timeout(15_000) },
+      { category: "video", label: `查询视频任务 · ${requestedModel}` },
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : "网络连接失败";
     return NextResponse.json({ status: "running", progress: 0, error: `状态查询暂时失败：${message}` });
@@ -165,25 +170,19 @@ export async function GET(req: Request, ctx: { params: Promise<{ taskId: string 
     return NextResponse.json({ status: "failed", progress, error: extractError(payload) });
   }
   if (SUCCESS.has(rawStatus)) {
-    const videoUrl = extractGeneratedVideoUrl(payload) ?? extractVideoUrlDeep(payload);
+    const result = extractVideoResultMetadata(payload, taskId);
+    const videoUrl = result.videoUrl ?? extractVideoUrlDeep(payload);
     if (!videoUrl) {
       return NextResponse.json({ status: "failed", progress: 100, error: "成功但未返回视频 URL" });
     }
-    const dicts = collectDicts(payload);
-    const root = dicts[0];
-    const videoOutput = dicts.find((entry) => String(entry.type ?? "").toLowerCase() === "video" && entry.url === videoUrl);
-    const task = dicts.find((entry) => String(entry.id ?? "") === taskId && entry.status != null);
-    const billing = Array.isArray(task?.billing)
-      ? task.billing.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object" && !Array.isArray(entry))
-      : [];
     return NextResponse.json({
       status: "success",
       progress: 100,
       videoUrl,
-      watermarkUrl: typeof videoOutput?.watermark_url === "string" ? videoOutput.watermark_url : undefined,
-      outputDuration: videoOutput?.duration != null ? String(videoOutput.duration) : undefined,
-      requestId: typeof root?.request_id === "string" ? root.request_id : undefined,
-      billing,
+      watermarkUrl: result.watermarkUrl,
+      outputDuration: result.outputDuration,
+      requestId: result.requestId,
+      billing: result.billing,
     });
   }
 

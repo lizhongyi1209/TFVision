@@ -1,5 +1,6 @@
 // "视觉反推" (visual reverse-engineering) — trimmed port of TVision's vision.ts.
 // Sends an image to a vision-capable chat model on the same o1key gateway via
+import { diagnosticFetch } from "./diagnostics.server";
 // the OpenAI-compatible /v1/chat/completions endpoint and returns a structured
 // prompt. Server-only.
 
@@ -82,12 +83,12 @@ async function callVisionOnce(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), VISION_TIMEOUT_MS);
   try {
-    const res = await fetch(url, {
+    const res = await diagnosticFetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
       signal: controller.signal,
-    });
+    }, { category: "vision", label: "提交视觉反推请求" });
     const text = await res.text();
     return { status: res.status, text };
   } finally {

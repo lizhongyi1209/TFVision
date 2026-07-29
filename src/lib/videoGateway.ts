@@ -1,7 +1,7 @@
 // Video gateway helpers (ported from TVision src/lib/videoGateway.ts).
 // Builds Kling / Seedance request bodies and extracts task ids / video URLs.
 
-import type { VideoAspectRatio, VideoJobParams, VideoModel, VideoResolution } from "./types";
+import type { VideoAspectRatio, VideoBillingEntry, VideoInputMode, VideoJobParams, VideoModel, VideoResolution } from "./types";
 import { assignVideoPromptReferences } from "./videoPromptReferences.ts";
 
 export const VIDEO_MODEL_IDS: Record<VideoModel, string> = {
@@ -51,6 +51,15 @@ export function allowedVideoAspectRatios(model: VideoModel): readonly VideoAspec
 
 export function supportsShots(model: VideoModel): boolean {
   return model !== "v2-6" && !isSeedanceModel(model);
+}
+
+export function shouldUseConnectedImageAsFirstFrame(
+  model: VideoModel,
+  inputMode: VideoInputMode,
+  hasExplicitFirstFrame: boolean,
+): boolean {
+  if (hasExplicitFirstFrame) return false;
+  return model === "v3" || model === "v2-6" || inputMode === "keyframes";
 }
 
 export function videoStatusEndpoint(model: VideoModel, taskId: string): string {
@@ -286,4 +295,50 @@ export function extractGeneratedVideoUrl(payload: unknown): string | null {
     if (mediaHint.includes("video") || /\.(?:mp4|mov|webm)(?:[?#]|$)/i.test(value)) return value;
   }
   return null;
+}
+
+export interface VideoResultMetadata {
+  videoUrl: string | null;
+  watermarkUrl?: string;
+  outputDuration?: string;
+  requestId?: string;
+  billing: VideoBillingEntry[];
+}
+
+/** Normalize both legacy nested task responses and the compact Kling Omni result. */
+export function extractVideoResultMetadata(payload: unknown, taskId?: string): VideoResultMetadata {
+  const sources = Array.from(payloadObjects(payload));
+  const root = sources[0];
+  const videoUrl = extractGeneratedVideoUrl(payload);
+  const videoSource = videoUrl
+    ? sources.find((source) => {
+        const candidate = source.video_url ?? source.result_url ?? source.download_url ?? source.url;
+        return candidate === videoUrl;
+      })
+    : undefined;
+  const taskSource = taskId
+    ? sources.find((source) => (source.task_id ?? source.taskId ?? source.id) === taskId)
+    : undefined;
+  const billingSource = taskSource ?? root;
+  const nestedBilling = Array.isArray(billingSource?.billing)
+    ? billingSource.billing.filter(
+        (entry): entry is VideoBillingEntry => !!entry && typeof entry === "object" && !Array.isArray(entry),
+      )
+    : [];
+  const compactCost = root?.cost;
+  const billing = nestedBilling.length
+    ? nestedBilling
+    : compactCost != null && String(compactCost).trim()
+      ? [{ charge_type: "unit", amount: String(compactCost) }]
+      : [];
+  const duration = videoSource?.duration ?? root?.duration;
+  const requestId = sources.find((source) => typeof source.request_id === "string")?.request_id;
+
+  return {
+    videoUrl,
+    watermarkUrl: typeof videoSource?.watermark_url === "string" ? videoSource.watermark_url : undefined,
+    outputDuration: duration != null ? String(duration) : undefined,
+    requestId: typeof requestId === "string" ? requestId : undefined,
+    billing,
+  };
 }
