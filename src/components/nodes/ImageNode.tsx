@@ -36,6 +36,7 @@ import { NodeShell, RunningVeil } from "./NodeShell";
 import { Chip } from "../ui";
 import { AmazonAiMetadataPanel } from "../AmazonAiMetadataPanel";
 import { ImeSafeTextarea } from "../ImeSafeTextarea";
+import { formatGenerationDuration } from "@/lib/generationTiming";
 
 const isImageFile = (file: File) =>
   file.type.startsWith("image/") || /\.(?:png|jpe?g|webp)$/i.test(file.name);
@@ -75,6 +76,24 @@ const IMAGE_GENERATOR_HEADER_HEIGHT = 94;
 const IMAGE_GENERATOR_MIN_HEIGHT = 520;
 const DEFAULT_BATCH_PROMPT_COUNT = 4;
 const IMAGE_COUNT_OPTIONS = Array.from({ length: 9 }, (_, index) => index + 1);
+
+const ImageGenerationElapsed = memo(function ImageGenerationElapsed({
+  startedAt,
+}: {
+  startedAt?: number;
+}) {
+  const [elapsedMs, setElapsedMs] = useState(0);
+
+  useEffect(() => {
+    if (!startedAt) return;
+    const updateElapsed = () => setElapsedMs(Math.max(0, Date.now() - startedAt));
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1_000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+
+  return <span className="font-mono tabular-nums">{formatGenerationDuration(elapsedMs)}</span>;
+});
 
 function normalizeBatchPrompts(data: ImageNodeData) {
   const prompts = Array.isArray(data.batchPrompts) ? data.batchPrompts.slice(0, MAX_BATCH_PROMPTS) : [];
@@ -555,6 +574,10 @@ function GeneratedImageResult({
   const resultLabels = Array.isArray(data.resultLabels) ? data.resultLabels : [];
   const focusedResultUrl = focusedResultIndex === null ? null : urls[focusedResultIndex] ?? null;
   const running = data.status === "running";
+  const generationDurationMeta = data.generationDurationMs !== undefined
+    ? `耗时 ${formatGenerationDuration(data.generationDurationMs)}`
+    : undefined;
+  const mediaMeta = data.mediaWidth && data.mediaHeight ? `${data.mediaWidth} × ${data.mediaHeight}` : undefined;
   const activeResultIndex = focusedResultIndex ?? Math.max(0, Math.min(urls.length - 1, data.activeIndex ?? 0));
   const activeResultUrl = urls[activeResultIndex] ?? null;
   const hasActiveEditMask = Boolean(data.editGuide && data.editMask && data.editMaskImageIndex === activeResultIndex);
@@ -673,7 +696,7 @@ function GeneratedImageResult({
       width={nodeWidth}
       height={nodeHeight}
       running={running}
-      headerMeta={data.mediaWidth && data.mediaHeight ? `${data.mediaWidth} × ${data.mediaHeight}` : undefined}
+      headerMeta={[mediaMeta, generationDurationMeta].filter(Boolean).join(" · ") || undefined}
       showHeaderActions={false}
       frameless
       portTop="50%"
@@ -693,37 +716,26 @@ function GeneratedImageResult({
         )}
       >
         {running ? (
-          <div role="status" aria-label="图片生成中" className="absolute inset-0 flex flex-col items-center justify-center overflow-hidden bg-ink-2">
-            <div className="pointer-events-none absolute inset-0 tf-generation-grid" />
-            <div className="pointer-events-none absolute inset-0 overflow-hidden">
-              <div className="scan-sweep absolute inset-x-0 h-1/2 opacity-70" />
-            </div>
-            <div className="tf-generation-orbit relative mb-5 flex h-24 w-24 items-center justify-center rounded-full border border-white/10">
-              <div className="absolute inset-[9px] rounded-full border border-dashed border-white/15" />
-              <Icon name="Sparkle" size={24} className="text-fg" weight="duotone" />
-            </div>
-            <div className="relative text-[28px] font-semibold tabular-nums tracking-[-0.04em] text-fg">
-              {Math.round(data.progress)}<span className="ml-0.5 text-[14px] font-normal text-fg-mute">%</span>
-            </div>
-            <div className="relative mt-1 text-[11px] tracking-[0.08em] text-fg-dim">
-              {data.combinationEnabled && (data.batchSize ?? 0) > 0
-                ? `${data.batchSize} 个组合并发生成中`
-                : (data.batchSize ?? 1) > 1
-                  ? `${data.batchSize} 套提示词并发生成中`
-                  : progressStageLabel(data.progress)}
-            </div>
+          <div role="status" aria-label="图片生成中" className="absolute inset-0 overflow-hidden bg-ink-2">
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.045),transparent_42%)]" />
             <button
               type="button"
-              aria-label="取消生成"
+              title="取消生成"
+              aria-label="取消图片生成"
               onClick={(event) => {
                 event.stopPropagation();
                 cancelImageGeneration(id);
               }}
-              className="nodrag relative mt-5 flex h-8 items-center gap-1.5 rounded-full border border-white/12 bg-white/[0.04] px-3 text-[11px] text-fg-dim transition-colors hover:border-white/25 hover:bg-white/[0.08] hover:text-fg"
+              className="nodrag group/cancel absolute left-1/2 top-1/2 flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-white/12 bg-white/[0.045] text-fg-dim shadow-[0_12px_38px_rgba(0,0,0,0.28)] backdrop-blur transition-[border-color,background-color,color,transform] hover:border-danger/45 hover:bg-danger/10 hover:text-danger active:scale-95"
             >
-              <Icon name="X" size={11} weight="bold" />
-              取消生成
+              <Icon name="X" size={17} weight="bold" className="transition-transform group-hover/cancel:scale-110" />
             </button>
+            <div className="pointer-events-none absolute inset-x-0 bottom-5 flex items-baseline justify-center gap-2 text-[10px] tracking-[0.08em] text-fg-mute">
+              <span>生图耗时</span>
+              <span className="text-[12px] tracking-normal text-fg-dim">
+                <ImageGenerationElapsed startedAt={data.startedAt} />
+              </span>
+            </div>
           </div>
         ) : data.status === "success" && urls.length ? (
           <>
@@ -824,6 +836,11 @@ function GeneratedImageResult({
             <span className="text-[13px] font-medium text-fg">
               {data.status === "cancelled" ? "生成已取消" : "生成失败"}
             </span>
+            {data.generationDurationMs !== undefined ? (
+              <span className="mt-1 font-mono text-[10px] tabular-nums text-fg-mute">
+                生图耗时 {formatGenerationDuration(data.generationDurationMs)}
+              </span>
+            ) : null}
             <span className="mt-1.5 text-[11px] leading-relaxed text-fg-mute">
               {data.status === "cancelled" ? "本节点已停止等待结果，可从原节点重新提交。" : data.error || "请从原节点重新提交。"}
             </span>

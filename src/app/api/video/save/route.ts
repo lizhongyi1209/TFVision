@@ -3,17 +3,53 @@
 // 文件名：video-<taskId>.mp4，幂等。
 
 import { NextResponse } from "next/server";
+import { execFile } from "child_process";
 import { promises as fs } from "fs";
 import path from "path";
+import { promisify } from "util";
 import { appendVideoMeta } from "@/lib/historyMeta";
 import { copyFileToLocalDirectory } from "@/lib/localMedia.server";
 import type { VideoMeta } from "@/lib/types";
+import ffprobeInstaller from "@ffprobe-installer/ffprobe";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const OUTPUT_DIR = path.join(process.cwd(), "output");
 const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
+const execFileAsync = promisify(execFile);
+
+function parseFrameRate(value: unknown): number {
+  const [numerator, denominator = 1] = String(value ?? "0/1").split("/", 2).map(Number);
+  return denominator ? numerator / denominator : 0;
+}
+
+async function probeSavedVideo(filePath: string) {
+  try {
+    const { stdout } = await execFileAsync(ffprobeInstaller.path, [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate:format=duration",
+      "-of", "json",
+      filePath,
+    ], { timeout: 20_000, windowsHide: true, maxBuffer: 1024 * 1024 });
+    const payload = JSON.parse(stdout) as {
+      streams?: Array<{ width?: number; height?: number; avg_frame_rate?: string; r_frame_rate?: string }>;
+      format?: { duration?: string };
+    };
+    const stream = payload.streams?.[0];
+    const width = Number(stream?.width);
+    const height = Number(stream?.height);
+    const duration = Number(payload.format?.duration);
+    const frameRate = parseFrameRate(stream?.avg_frame_rate ?? stream?.r_frame_rate);
+    if (![width, height, duration, frameRate].every(Number.isFinite) || width <= 0 || height <= 0 || frameRate <= 0) {
+      return undefined;
+    }
+    return { width, height, duration, frameRate: Math.round(frameRate * 100) / 100 };
+  } catch {
+    return undefined;
+  }
+}
 
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as {
@@ -38,7 +74,11 @@ export async function POST(req: Request) {
     const exportedPath = outputDirectory
       ? await copyFileToLocalDirectory(target, outputDirectory, "tfvision-video")
       : undefined;
-    return NextResponse.json({ localUrl: `/api/media/${filename}`, exportedPath });
+    return NextResponse.json({
+      localUrl: `/api/media/${filename}`,
+      exportedPath,
+      media: await probeSavedVideo(target),
+    });
   } catch {
     // not saved yet — download below
   }
@@ -60,5 +100,9 @@ export async function POST(req: Request) {
   const exportedPath = outputDirectory
     ? await copyFileToLocalDirectory(target, outputDirectory, "tfvision-video")
     : undefined;
-  return NextResponse.json({ localUrl: `/api/media/${filename}`, exportedPath });
+  return NextResponse.json({
+    localUrl: `/api/media/${filename}`,
+    exportedPath,
+    media: await probeSavedVideo(target),
+  });
 }

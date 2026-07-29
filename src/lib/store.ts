@@ -25,6 +25,7 @@ import {
   type JobStatusResponse,
   type NodeKind,
   type PublicSettings,
+  type RouteName,
   type ShotSegment,
   type TextNodeData,
   type VideoNodeData,
@@ -32,7 +33,9 @@ import {
   type WorkspaceFile,
 } from "./types";
 import { downscaleImageSrc, fakeProgressCurve } from "./utils";
-import { shouldUseConnectedImageAsFirstFrame } from "./videoGateway";
+import { isSeedanceModel, resolveKeyframeSlots, shouldUseConnectedImageAsFirstFrame, supportsShots } from "./videoGateway";
+import { requestTokenBalanceRefresh, settingsPatchUpdatesToken } from "./tokenBalanceRefresh";
+import { presentImageGenerationError } from "./agentImageGeneration";
 import {
   captureNodeDeletion,
   restoreNodeDeletion,
@@ -146,6 +149,9 @@ export function defaultVideoData(label: string): VideoNodeData {
     seedText: "",
     referType: "feature",
     keepOriginalSound: false,
+    characterOrientation: "video",
+    elementId: "",
+    elementReferenceId: "element_1",
     shotMode: "auto",
     shotModeExplicit: false,
     shotsEnabled: false,
@@ -336,6 +342,7 @@ function resetCopiedNodeData(node: AppNode): Record<string, unknown> {
   data.jobIds = [];
   data.taskId = undefined;
   data.startedAt = undefined;
+  data.generationDurationMs = undefined;
   data.error = undefined;
   data.cancelledAt = undefined;
   return data;
@@ -381,7 +388,11 @@ function clearPoll(nodeId: string) {
   pollTimers.delete(nodeId);
 }
 
-async function ensurePublicVideoReferenceUrl(asset: VideoReferenceAsset, model: VideoNodeData["model"]): Promise<string> {
+async function ensurePublicVideoReferenceUrl(
+  asset: VideoReferenceAsset,
+  model: VideoNodeData["model"],
+  characterOrientation: VideoNodeData["characterOrientation"] = "video",
+): Promise<string> {
   const hasTrim = asset.kind === "video" && Number.isFinite(asset.trimStart) && Number.isFinite(asset.trimEnd);
   if (!hasTrim && typeof asset.url === "string" && /^https?:\/\//i.test(asset.url)) return asset.url;
   let blob: Blob | null = null;
@@ -396,6 +407,7 @@ async function ensurePublicVideoReferenceUrl(asset: VideoReferenceAsset, model: 
   const form = new FormData();
   form.append("file", blob, asset.name);
   form.append("model", model);
+  if (model === "v3-motion-control") form.append("characterOrientation", characterOrientation ?? "video");
   if (hasTrim) {
     form.append("trimStart", String(asset.trimStart));
     form.append("trimEnd", String(asset.trimEnd));
@@ -649,7 +661,7 @@ interface StudioState {
 
   // settings
   fetchSettings: () => Promise<void>;
-  saveSettings: (patch: { apiKey?: string; clearApiKey?: boolean }) => Promise<boolean>;
+  saveSettings: (patch: { apiKey?: string; clearApiKey?: boolean; route?: RouteName }) => Promise<boolean>;
 
   // generation
   generateImage: (nodeId: string) => Promise<string | undefined>;
@@ -845,6 +857,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     data.progress = 0;
     data.jobIds = [];
     data.taskId = undefined;
+    data.generationDurationMs = undefined;
     if (kind === "imageAsset" && data.isGeneratedResult) {
       delete data.label;
       data.isGeneratedResult = undefined;
@@ -1056,6 +1069,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (!res.ok) throw new Error();
       const s = (await res.json()) as PublicSettings;
       set({ settings: s });
+      if (settingsPatchUpdatesToken(patch)) requestTokenBalanceRefresh();
       return true;
     } catch {
       get().showToast("保存设置失败", "error");
@@ -1075,6 +1089,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       status: "cancelled",
       progress: 0,
       cancelledAt: Date.now(),
+      generationDurationMs: data.startedAt ? Math.max(0, Date.now() - data.startedAt) : undefined,
       error: undefined,
     });
     settleGenerationEdge(nodeId, "cancelled", set, get);
@@ -1247,6 +1262,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       progress: 0,
       error: undefined,
       startedAt,
+      generationDurationMs: undefined,
       jobIds: [],
       jobLabels: [],
       resultLabels: [],
@@ -1345,10 +1361,16 @@ export const useStudio = create<StudioState>((set, get) => ({
       } catch (e) {
         submitControllers.delete(resultNodeId);
         if (!imageResultIsRunning(resultNodeId, get)) return;
-        const message = e instanceof Error ? e.message : typeof e === "string" ? e : "提交失败";
-        get().updateNode(resultNodeId, { status: "failed", error: message, progress: 0 });
+        const message = presentImageGenerationError(
+          e instanceof Error ? e.message : typeof e === "string" ? e : "提交失败",
+        );
+        get().updateNode(resultNodeId, {
+          status: "failed",
+          error: message,
+          progress: 0,
+          generationDurationMs: Math.max(0, Date.now() - startedAt),
+        });
         settleGenerationEdge(resultNodeId, "failed", set, get);
-        get().showToast(message, "error");
       }
     })();
 
@@ -1432,7 +1454,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     const shotMode = data.model === "v3-omni" && referenceVideos.length
       ? data.referType === "base" ? "single" : configuredShotMode === "single" ? "auto" : configuredShotMode
       : configuredShotMode;
-    const shotsEnabled = shotMode === "custom";
+    const shotsEnabled = shotMode === "custom" && supportsShots(data.model);
     const ownShots: ShotSegment[] = Array.isArray(data.shots) ? data.shots : [];
     const shots: ShotSegment[] = shotsEnabled && upstreamTextParts.length
       ? ownShots.map((shot) => ({ ...shot, prompt: [...upstreamTextParts, shot.prompt.trim()].filter(Boolean).join("\n") }))
@@ -1446,7 +1468,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       return;
     }
     if (shotsEnabled) {
-      if (data.model === "seedance-2.0" || data.model === "seedance-2.0-fast" || data.model === "v2-6") {
+      if (isSeedanceModel(data.model) || data.model === "v2-6") {
         get().showToast("当前模型不支持分镜模式", "error");
         return;
       }
@@ -1469,8 +1491,10 @@ export const useStudio = create<StudioState>((set, get) => ({
     const keyframeAssets = Array.isArray(data.keyframeAssets)
       ? data.keyframeAssets.filter((asset) => asset && asset.kind === "image")
       : [];
-    const firstFrameAsset = keyframeAssets.find((asset) => asset.role === "first_frame");
-    const lastFrameAsset = keyframeAssets.find((asset) => asset.role === "last_frame");
+    const { firstFrame: firstFrameAsset, lastFrame: lastFrameAsset } = resolveKeyframeSlots(
+      keyframeAssets,
+      inputMode === "keyframes" ? upstreamImageAssets : [],
+    );
     const needsFrame = data.model === "v3" || data.model === "v2-6";
     if (inputMode === "keyframes" && needsFrame && !firstFrameAsset) {
       get().showToast("首尾帧模式需要添加首帧图片", "error");
@@ -1527,7 +1551,34 @@ export const useStudio = create<StudioState>((set, get) => ({
         return;
       }
     }
-    if (inputMode === "references" && (data.model === "seedance-2.0" || data.model === "seedance-2.0-fast")) {
+    if (data.model === "v3-motion-control") {
+      if (referenceAudios.length) {
+        get().showToast("可灵动作控制不支持参考音频", "error");
+        return;
+      }
+      if (referenceVideos.length !== 1) {
+        get().showToast("可灵动作控制必须提供 1 段动作参考视频", "error");
+        return;
+      }
+      if (referenceImages.length !== 1) {
+        get().showToast("请提供 1 张形象参考图", "error");
+        return;
+      }
+      const motionVideo = referenceVideos[0];
+      const motionDuration = motionVideo.duration != null
+        ? Math.max(0, (motionVideo.trimEnd ?? motionVideo.duration) - (motionVideo.trimStart ?? 0))
+        : undefined;
+      const maxDuration = data.characterOrientation === "image" ? 10 : 30;
+      if (motionDuration != null && (motionDuration < 3 || motionDuration > maxDuration)) {
+        get().showToast(`动作参考视频时长必须在 3-${maxDuration} 秒之间`, "error");
+        return;
+      }
+      if (prompt.length > 2500) {
+        get().showToast("可灵动作控制提示词不能超过 2500 字符", "error");
+        return;
+      }
+    }
+    if (inputMode === "references" && isSeedanceModel(data.model)) {
       if (referenceImages.length > 9 || referenceVideos.length > 3 || referenceAudios.length > 3) {
         get().showToast("Seedance 参考素材数量超出模型上限", "error");
         return;
@@ -1574,6 +1625,12 @@ export const useStudio = create<StudioState>((set, get) => ({
       seedText: data.seedText,
       referType: data.referType,
       keepOriginalSound: data.keepOriginalSound,
+      characterOrientation: data.characterOrientation,
+      elementId: undefined,
+      elementReferenceId: undefined,
+      callbackUrl: undefined,
+      externalTaskId: undefined,
+      watermarkEnabled: false,
       shotMode,
       shotModeExplicit: data.shotModeExplicit,
       shotsEnabled,
@@ -1604,7 +1661,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       try {
         const resolveAssets = (assets: VideoReferenceAsset[]) => Promise.all(assets.map(async (asset) => ({
           ...asset,
-          url: await ensurePublicVideoReferenceUrl(asset, data.model),
+          url: await ensurePublicVideoReferenceUrl(asset, data.model, data.characterOrientation),
         })));
         const [resolvedReferences, resolvedKeyframes] = data.model === "v3-omni"
           ? await Promise.all([resolveAssets(referenceAssets), resolveAssets(keyframeAssets)])
@@ -1626,19 +1683,27 @@ export const useStudio = create<StudioState>((set, get) => ({
           .filter((asset) => asset.kind === "image" && !upstreamImageAssets.some((upstream) => upstream.id === asset.id))
           .map((asset) => asset.url);
         const connectedFirstFrame = resolvedUpstreamImages[0]?.url;
-        const useConnectedAsFirstFrame = Boolean(connectedFirstFrame)
+        const resolvedKeyframeSlots = resolveKeyframeSlots(
+          resolvedKeyframes,
+          inputMode === "keyframes" ? resolvedUpstreamImages : [],
+        );
+        const connectedKeyframeIdSet = new Set(resolvedKeyframeSlots.connectedFrameIds);
+        const useConnectedAsFirstFrame = inputMode !== "keyframes" && Boolean(connectedFirstFrame)
           && shouldUseConnectedImageAsFirstFrame(
             data.model,
             inputMode,
             resolvedKeyframes.some((asset) => asset.role === "first_frame"),
           );
-        const remainingConnectedRefs = resolvedUpstreamImages.slice(useConnectedAsFirstFrame ? 1 : 0).map((asset) => asset.url);
+        const remainingConnectedRefs = resolvedUpstreamImages
+          .filter((asset) => !connectedKeyframeIdSet.has(asset.id))
+          .slice(useConnectedAsFirstFrame ? 1 : 0)
+          .map((asset) => asset.url);
         const imageRefs = [...ownImageRefs, ...remainingConnectedRefs];
         const videoRefs = resolvedReferences.filter((asset) => asset.kind === "video").map((asset) => asset.url);
         const audioRefs = resolvedReferences.filter((asset) => asset.kind === "audio").map((asset) => asset.url);
-        const firstFrameUrl = resolvedKeyframes.find((asset) => asset.role === "first_frame")?.url
+        const firstFrameUrl = resolvedKeyframeSlots.firstFrame?.url
           ?? (useConnectedAsFirstFrame ? connectedFirstFrame : undefined);
-        const lastFrameUrl = resolvedKeyframes.find((asset) => asset.role === "last_frame")?.url;
+        const lastFrameUrl = resolvedKeyframeSlots.lastFrame?.url;
         const res = await fetch("/api/video/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1656,6 +1721,12 @@ export const useStudio = create<StudioState>((set, get) => ({
             aspectRatio: data.aspectRatio,
             referType: data.referType ?? "feature",
             keepOriginalSound: data.keepOriginalSound === true,
+            characterOrientation: data.characterOrientation ?? "video",
+            elementId: undefined,
+            elementReferenceId: undefined,
+            callbackUrl: undefined,
+            externalTaskId: undefined,
+            watermarkEnabled: false,
             shotMode,
             shots: shotsEnabled ? shots : [],
             imageUrl: data.model === "v3-omni" || inputMode === "keyframes" ? firstFrameUrl : needsFrame ? firstFrameUrl ?? imageRefs[0] : undefined,
@@ -2023,6 +2094,7 @@ function pollImageNode(
         patchNode(get, nodeId, {
           status: "success",
           progress: 100,
+          generationDurationMs: Math.max(0, Date.now() - startedAt),
           urls,
           resultLabels,
           url: urls[0],
@@ -2036,11 +2108,16 @@ function pollImageNode(
           get().showToast(`部分成功：${failed.length + submissionFailures} 项失败`, "error");
         }
       } else {
-        const msg = failed[0]?.error || "生成失败";
-        patchNode(get, nodeId, { status: "failed", progress: 0, error: msg });
+        const msg = presentImageGenerationError(failed[0]?.error || "生成失败");
+        patchNode(get, nodeId, {
+          status: "failed",
+          progress: 0,
+          error: msg,
+          generationDurationMs: Math.max(0, Date.now() - startedAt),
+        });
         settleGenerationEdge(nodeId, "failed", set, get);
-        get().showToast(msg, "error");
       }
+      requestTokenBalanceRefresh();
       return;
     }
 
@@ -2142,7 +2219,11 @@ function pollVideoNode(nodeId: string, taskId: string, prompt: string, set: SetF
             },
           }),
         });
-        const savePayload = (await saveRes.json()) as { localUrl?: string; error?: string };
+        const savePayload = (await saveRes.json()) as {
+          localUrl?: string;
+          error?: string;
+          media?: { width?: number; height?: number; duration?: number; frameRate?: number };
+        };
         const url = savePayload.localUrl ?? payload.videoUrl;
         patchNode(get, nodeId, {
           status: "success",
@@ -2153,6 +2234,9 @@ function pollVideoNode(nodeId: string, taskId: string, prompt: string, set: SetF
           outputDuration: payload.outputDuration,
           requestId: payload.requestId,
           billing: payload.billing,
+          mediaWidth: savePayload.media?.width,
+          mediaHeight: savePayload.media?.height,
+          mediaFrameRate: savePayload.media?.frameRate,
           startedAt: undefined,
         });
       } catch {
@@ -2170,6 +2254,7 @@ function pollVideoNode(nodeId: string, taskId: string, prompt: string, set: SetF
       }
       settleGenerationEdge(nodeId, "success", set, get);
       get().showToast("视频生成完成", "success");
+      requestTokenBalanceRefresh();
       return;
     }
 
@@ -2179,6 +2264,7 @@ function pollVideoNode(nodeId: string, taskId: string, prompt: string, set: SetF
       patchNode(get, nodeId, { status: "failed", progress: 0, error: msg, startedAt: undefined });
       settleGenerationEdge(nodeId, "failed", set, get);
       get().showToast(msg, "error");
+      requestTokenBalanceRefresh();
       return;
     }
 

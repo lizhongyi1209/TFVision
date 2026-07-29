@@ -4,9 +4,11 @@ import {
   VIDEO_MODEL_IDS,
   allowedVideoAspectRatios,
   allowedVideoResolutions,
+  buildKlingMotionControlGenerationBody,
   buildKlingOmniGenerationBody,
   buildSeedanceGenerationBody,
   extractVideoResultMetadata,
+  resolveKeyframeSlots,
   shouldUseConnectedImageAsFirstFrame,
   supportsShots,
   videoStatusEndpoint,
@@ -26,16 +28,80 @@ function params(patch: Partial<VideoJobParams> = {}): VideoJobParams {
 }
 
 test("视频模型映射和分辨率保持 TVision 契约", () => {
+  assert.equal(VIDEO_MODEL_IDS["v3-motion-control"], "kling-3.0");
   assert.equal(VIDEO_MODEL_IDS["v3-omni"], "kling-v3-omni");
   assert.equal(VIDEO_MODEL_IDS["seedance-2.0"], "seedance-2.0");
+  assert.equal(VIDEO_MODEL_IDS["seedance-2.0-mini"], "seedance-2.0-mini");
   assert.deepEqual(allowedVideoResolutions("seedance-2.0"), ["720p", "1080p", "4K"]);
   assert.deepEqual(allowedVideoResolutions("seedance-2.0-fast"), ["720p"]);
+  assert.deepEqual(allowedVideoResolutions("seedance-2.0-mini"), ["720p"]);
 });
 
 test("各视频模型仅使用服务器指定的轮询地址", () => {
+  assert.equal(
+    videoStatusEndpoint("v3-motion-control", "motion/task"),
+    "/kling/motion-control/kling-3.0/motion%2Ftask",
+  );
   assert.equal(videoStatusEndpoint("v3-omni", "task/123"), "/kling/omni-video/kling-3.0-omni/task%2F123");
   assert.equal(videoStatusEndpoint("seedance-2.0", "task-2"), "/v1/video/generations/task-2");
+  assert.equal(videoStatusEndpoint("seedance-2.0-mini", "task-mini"), "/v1/video/generations/task-mini");
   assert.equal(videoStatusEndpoint("v3", "task-3"), "/kling/v1/videos/image2video/task-3");
+});
+
+test("可灵 v3 动作控制按 kling 前缀组装请求并固定关闭水印与扩展选项", () => {
+  const body = buildKlingMotionControlGenerationBody(params({
+    model: "v3-motion-control",
+    mode: "1080p",
+    prompt: "角色跟随动作视频跳舞",
+    audioMode: "original",
+    characterOrientation: "image",
+    refUrls: ["https://cdn.example.com/character.png"],
+    videoUrls: ["https://cdn.example.com/motion.mp4"],
+    callbackUrl: "https://example.com/callback",
+    externalTaskId: "ignored-external-id",
+    watermarkEnabled: true,
+  }));
+
+  assert.deepEqual(body, {
+    contents: [
+      { type: "prompt", text: "角色跟随动作视频跳舞" },
+      { type: "image", url: "https://cdn.example.com/character.png" },
+      { type: "video", url: "https://cdn.example.com/motion.mp4" },
+    ],
+    settings: {
+      character_orientation: "image",
+      audio: "original",
+      resolution: "1080p",
+    },
+    options: {
+      watermark_info: { enabled: false },
+    },
+  });
+});
+
+test("可灵 v3 动作控制暂时禁用 Element，并要求形象图与动作视频", () => {
+  assert.throws(
+    () => buildKlingMotionControlGenerationBody(params({
+      model: "v3-motion-control",
+      elementId: "element-system-id",
+      videoUrls: ["https://cdn.example.com/motion.mp4"],
+    })),
+    /暂不支持 Element/,
+  );
+  assert.throws(
+    () => buildKlingMotionControlGenerationBody(params({
+      model: "v3-motion-control",
+      refUrls: ["https://cdn.example.com/character.png"],
+    })),
+    /必须提供 1 段动作参考视频/,
+  );
+  assert.throws(
+    () => buildKlingMotionControlGenerationBody(params({
+      model: "v3-motion-control",
+      videoUrls: ["https://cdn.example.com/motion.mp4"],
+    })),
+    /请提供 1 张形象参考图/,
+  );
 });
 
 test("可灵 Omni 与 Seedance 使用不同画面比例白名单", () => {
@@ -101,6 +167,40 @@ test("Seedance 请求体透传专属参数和多模态素材", () => {
     videos: ["https://cdn.example.com/ref.mp4"],
     audios: ["https://cdn.example.com/ref.wav"],
   });
+});
+
+test("首尾帧模式会按首帧、尾帧顺序接收连线图片", () => {
+  const connected = [
+    { id: "connected-1", kind: "image" as const, name: "image 1", url: "https://cdn.example.com/1.png" },
+    { id: "connected-2", kind: "image" as const, name: "image 2", url: "https://cdn.example.com/2.png" },
+  ];
+  const slots = resolveKeyframeSlots([], connected);
+
+  assert.equal(slots.firstFrame?.id, "connected-1");
+  assert.equal(slots.firstFrame?.role, "first_frame");
+  assert.equal(slots.lastFrame?.id, "connected-2");
+  assert.equal(slots.lastFrame?.role, "last_frame");
+  assert.deepEqual(slots.connectedFrameIds, ["connected-1", "connected-2"]);
+});
+
+test("手动添加的帧保留槽位，连线图片填充剩余槽位", () => {
+  const manualFirst = { id: "manual-first", kind: "image" as const, name: "manual", url: "blob:manual", role: "first_frame" as const };
+  const connected = { id: "connected-1", kind: "image" as const, name: "image 1", url: "https://cdn.example.com/1.png" };
+  const slots = resolveKeyframeSlots([manualFirst], [connected]);
+
+  assert.equal(slots.firstFrame?.id, "manual-first");
+  assert.equal(slots.lastFrame?.id, "connected-1");
+});
+
+test("Seedance 2.0 Mini 使用指定模型 ID 并复用 Fast 规格", () => {
+  const body = buildSeedanceGenerationBody(params({
+    model: "seedance-2.0-mini",
+    mode: "720p",
+  }));
+
+  assert.equal(body.model, "seedance-2.0-mini");
+  assert.equal(body.resolution, "720p");
+  assert.equal(supportsShots("seedance-2.0-mini"), false);
 });
 
 test("Seedance 智能比例不透传 ratio，且音频不能单独提交", () => {

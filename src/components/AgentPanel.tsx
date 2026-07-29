@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { MODELS } from "@/lib/models";
 import type { AgentImagePlan, AgentVideoPlan, HistoryItem, ModelName, VideoBillingEntry } from "@/lib/types";
 import { deleteAgentMedia, loadAgentMedia, persistAgentMedia } from "@/lib/agentMediaStore";
+import { requestTokenBalanceRefresh } from "@/lib/tokenBalanceRefresh";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { Icon } from "./icons";
 
@@ -1319,6 +1320,7 @@ export function AgentPanel({ open, onClose }: { open: boolean; onClose: () => vo
       setMessages(completedMessages);
       persistConversation(conversationId, title, completedMessages, completedAt);
     } finally {
+      requestTokenBalanceRefresh();
       agentActivityRef.current = [];
       setAgentActivity([]);
       setIsSending(false);

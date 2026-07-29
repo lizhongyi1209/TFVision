@@ -2,7 +2,7 @@
 
 // ── Image generation (o1key async API) ──────────────────────────────────────
 
-export type RouteName = "全球加速";
+export type RouteName = "国内加速" | "国外加速";
 export type Billing = "特价" | "官方";
 export type Resolution = "512" | "1K" | "2K" | "4K";
 export type ModelName = "Nano Banana Pro" | "Nano Banana 2" | "Nano Banana" | "GPT Image 2";
@@ -59,14 +59,15 @@ export interface GenMeta {
 
 // ── Video generation (Kling / Seedance via o1key gateway) ───────────────────
 
-export type KlingModel = "v3" | "v2-6" | "v3-omni";
-export type SeedanceModel = "seedance-2.0" | "seedance-2.0-fast";
+export type KlingModel = "v3" | "v2-6" | "v3-omni" | "v3-motion-control";
+export type SeedanceModel = "seedance-2.0" | "seedance-2.0-fast" | "seedance-2.0-mini";
 export type VideoModel = KlingModel | SeedanceModel;
 export type VideoResolution = "480p" | "720p" | "1080p" | "4K";
 export type VideoAspectRatio = "智能" | "16:9" | "4:3" | "1:1" | "3:4" | "9:16" | "21:9";
 export type VideoReferType = "feature" | "base";
 export type VideoAudioMode = "native" | "original" | "off";
 export type VideoShotMode = "single" | "auto" | "custom";
+export type KlingMotionCharacterOrientation = "image" | "video";
 
 export interface VideoBillingEntry {
   charge_type?: string;
@@ -108,6 +109,18 @@ export interface VideoJobParams {
   shots?: ShotSegment[];
   /** 可灵 Omni：单镜头、AI 自动多镜头或自定义分镜。 */
   shotMode?: VideoShotMode;
+  /** 可灵 v3 动作控制：生成角色朝向跟随形象图或动作视频。 */
+  characterOrientation?: KlingMotionCharacterOrientation;
+  /** 预留字段；当前版本暂不开放 Element。 */
+  elementId?: string;
+  /** 预留字段；当前版本暂不开放 Element。 */
+  elementReferenceId?: string;
+  /** 预留字段；当前页面不开放回调地址。 */
+  callbackUrl?: string;
+  /** 预留字段；当前页面不开放外部任务 ID。 */
+  externalTaskId?: string;
+  /** 预留字段；当前版本固定为无水印。 */
+  watermarkEnabled?: boolean;
 }
 
 export interface AgentVideoPlan {
@@ -207,6 +220,8 @@ export type ImageNodeData = {
   progress: number;
   error?: string;
   startedAt?: number;
+  /** 本次图片生成从提交到结束的实际耗时。 */
+  generationDurationMs?: number;
   jobIds: string[];
   /** 与 jobIds / urls 对齐的组合来源标签。 */
   jobLabels?: string[];
@@ -304,6 +319,12 @@ export type VideoNodeData = {
   seedText: string;
   referType: VideoReferType;
   keepOriginalSound: boolean;
+  characterOrientation?: KlingMotionCharacterOrientation;
+  elementId?: string;
+  elementReferenceId?: string;
+  callbackUrl?: string;
+  externalTaskId?: string;
+  watermarkEnabled?: boolean;
   shotMode?: VideoShotMode;
   /** 区分用户主动选择的单镜头与旧版本的默认单镜头。 */
   shotModeExplicit?: boolean;

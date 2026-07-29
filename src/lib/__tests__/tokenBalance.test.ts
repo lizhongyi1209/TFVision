@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { formatTokenBalance, parseTokenBalance } from "../tokenBalance.ts";
+import { settingsPatchUpdatesToken } from "../tokenBalanceRefresh.ts";
 
 test("令牌余额将 New API quota 换算为展示单位", () => {
   assert.deepEqual(parseTokenBalance({
@@ -33,4 +34,10 @@ test("令牌余额兼容美元字段和无限额度", () => {
     granted: null,
     expiresAt: null,
   });
+});
+
+test("首次填写或更新令牌时需要刷新余额", () => {
+  assert.equal(settingsPatchUpdatesToken({ apiKey: "new-token" }), true);
+  assert.equal(settingsPatchUpdatesToken({ apiKey: "   " }), false);
+  assert.equal(settingsPatchUpdatesToken({}), false);
 });

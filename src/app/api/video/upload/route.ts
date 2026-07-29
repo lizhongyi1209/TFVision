@@ -85,6 +85,58 @@ async function validateKlingOmniMedia(
   }
 }
 
+async function validateKlingMotionMedia(
+  bytes: Buffer,
+  spec: { extension: string; kind: string },
+  characterOrientation: "image" | "video",
+): Promise<string | null> {
+  if (spec.kind === "audio") return "可灵动作控制不支持参考音频";
+  if (spec.kind === "image" && spec.extension === "webp") return "可灵动作控制图片仅支持 JPG、JPEG 或 PNG";
+  if (spec.kind === "video" && bytes.length > 100 * MB) return "可灵动作控制视频不能超过 100MB";
+
+  const tempPath = path.join(os.tmpdir(), `tfvision-motion-${crypto.randomUUID()}.${spec.extension}`);
+  try {
+    await fs.writeFile(tempPath, bytes);
+    const { stdout } = await execFileAsync(ffprobeInstaller.path, [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=width,height:format=duration",
+      "-of", "json",
+      tempPath,
+    ], { timeout: 15_000, windowsHide: true, maxBuffer: 1024 * 1024 });
+    const payload = JSON.parse(stdout) as {
+      streams?: Array<{ width?: number; height?: number }>;
+      format?: { duration?: string };
+    };
+    const stream = payload.streams?.[0];
+    const width = Number(stream?.width);
+    const height = Number(stream?.height);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      return "无法读取素材画面尺寸";
+    }
+    const ratio = width / height;
+    if (spec.kind === "image") {
+      if (width < 300 || height < 300) return "可灵动作控制图片宽高均不能小于 300px";
+      if (ratio < 0.4 || ratio > 2.5) return "可灵动作控制图片宽高比必须在 1:2.5 到 2.5:1 之间";
+      return null;
+    }
+
+    const duration = Number(payload.format?.duration);
+    const maxDuration = characterOrientation === "image" ? 10 : 30;
+    if (!Number.isFinite(duration) || duration < 3 || duration > maxDuration) {
+      return `动作参考视频时长必须在 3-${maxDuration} 秒之间`;
+    }
+    if (width < 340 || height < 340 || width > 3850 || height > 3850) {
+      return "动作参考视频宽高必须在 340-3850px 之间";
+    }
+    return null;
+  } catch {
+    return "无法读取素材媒体信息，请确认文件未损坏且编码受支持";
+  } finally {
+    await fs.unlink(tempPath).catch(() => undefined);
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -158,8 +210,17 @@ export async function POST(req: Request) {
       await Promise.all([fs.unlink(inputPath).catch(() => undefined), fs.unlink(outputPath).catch(() => undefined)]);
     }
   }
-  if (String(formData.get("model") ?? "") === "v3-omni") {
+  const model = String(formData.get("model") ?? "");
+  if (model === "v3-omni") {
     const validationError = await validateKlingOmniMedia(bytes, { kind: spec.kind, extension: uploadExtension });
+    if (validationError) return NextResponse.json({ error: validationError }, { status: 400 });
+  } else if (model === "v3-motion-control") {
+    const characterOrientation = formData.get("characterOrientation") === "image" ? "image" : "video";
+    const validationError = await validateKlingMotionMedia(
+      bytes,
+      { kind: spec.kind, extension: uploadExtension },
+      characterOrientation,
+    );
     if (validationError) return NextResponse.json({ error: validationError }, { status: 400 });
   }
 

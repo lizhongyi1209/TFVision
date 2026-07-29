@@ -97,22 +97,29 @@ export interface VideoModelInfo {
 }
 
 export const VIDEO_MODELS: VideoModelInfo[] = [
+  { value: "v3-motion-control", label: "可灵 v3 Motion", blurb: "角色动作模仿" },
   { value: "v3-omni", label: "可灵 v3 Omni", blurb: "多模态参考" },
   { value: "seedance-2.0", label: "Seedance 2.0", blurb: "多参考 · 4K" },
   { value: "seedance-2.0-fast", label: "Seedance 2.0 Fast", blurb: "极速 720p" },
+  { value: "seedance-2.0-mini", label: "Seedance 2.0 Mini", blurb: "轻量 720p" },
 ];
 
 export const VIDEO_MODEL_RESOLUTIONS: Record<VideoModel, readonly VideoResolution[]> = {
   "v3": ["720p", "1080p", "4K"],
   "v2-6": ["720p", "1080p"],
   "v3-omni": ["720p", "1080p", "4K"],
+  "v3-motion-control": ["720p", "1080p"],
   "seedance-2.0": ["720p", "1080p", "4K"],
   "seedance-2.0-fast": ["720p"],
+  "seedance-2.0-mini": ["720p"],
 };
 
 export function videoDurationsFor(model: VideoModel): readonly number[] {
   if (model === "v2-6") return [5, 10];
-  if (model === "seedance-2.0" || model === "seedance-2.0-fast") {
+  if (model === "v3-motion-control") {
+    return [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30];
+  }
+  if (model === "seedance-2.0" || model === "seedance-2.0-fast" || model === "seedance-2.0-mini") {
     return [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
   }
   return [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];

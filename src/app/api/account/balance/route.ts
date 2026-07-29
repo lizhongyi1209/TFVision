@@ -79,7 +79,7 @@ async function queryBalance(url: string, apiKey: string): Promise<BalancePayload
   return balancePayload(info);
 }
 
-export async function GET() {
+export async function GET(req: Request) {
   const settings = await readSettings();
   if (!settings.apiKey) {
     return NextResponse.json({ ok: false, error: "未设置 API 令牌" }, { status: 400 });
@@ -91,7 +91,8 @@ export async function GET() {
     cached = await readPersistentCache(settings.apiKey) ?? undefined;
     if (cached) balanceCache.set(settings.apiKey, cached);
   }
-  if (cached && Date.now() - cached.fetchedAt < FRESH_MS) {
+  const force = new URL(req.url).searchParams.get("force") === "1";
+  if (!force && cached && Date.now() - cached.fetchedAt < FRESH_MS) {
     return NextResponse.json({ ...cached.payload, cached: true });
   }
 

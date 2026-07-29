@@ -14,6 +14,7 @@ export type DiagnosticEntry = {
   durationMs: number;
   ok: boolean;
   error?: string;
+  errorDetails?: string;
   requestTruncated?: boolean;
   responseTruncated?: boolean;
 };
@@ -22,3 +23,17 @@ export type DiagnosticSnapshot = {
   entries: DiagnosticEntry[];
   maxEntries: number;
 };
+
+export function diagnosticStatusCode(entry: Pick<DiagnosticEntry, "responseStatus">): string {
+  return entry.responseStatus === null ? "ERR" : String(entry.responseStatus);
+}
+
+export function diagnosticRawError(
+  entry: Pick<DiagnosticEntry, "responseStatus" | "responseStatusText" | "responseBody" | "error" | "errorDetails">,
+): string {
+  const statusLine = entry.responseStatus === null
+    ? "NETWORK_ERROR"
+    : `HTTP ${entry.responseStatus}${entry.responseStatusText ? ` ${entry.responseStatusText}` : ""}`;
+  const details = entry.errorDetails || entry.error || "";
+  return [statusLine, details, entry.responseBody].filter(Boolean).join("\n\n");
+}

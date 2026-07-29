@@ -12,6 +12,7 @@ const OVERLOAD_PATTERN =
 const HARD_STOP_PATTERN =
   /(?:unauthorized|forbidden|invalid\s*(?:api\s*)?key|insufficient|balance|quota|billing|payment|content\s*policy|safety|moderation|鉴权|令牌|密钥|余额|额度|配额|欠费|内容安全|违规|审核)/i;
 const TRANSIENT_POLL_PATTERN = /(?:网络|连接|查询任务失败|timeout|timed out|fetch failed|socket|ECONNRESET)/i;
+const SYSTEM_CPU_OVERLOAD_PATTERN = /(?:\b503\b|system_cpu_overloaded)/i;
 
 export function sanitizeImageError(value: unknown) {
   const raw = value instanceof Error ? value.message : String(value || "图片生成失败");
@@ -20,6 +21,13 @@ export function sanitizeImageError(value: unknown) {
     .replace(/Bearer\s+[^\s]+/gi, "Bearer <REDACTED>")
     .trim()
     .slice(0, 600);
+}
+
+export function presentImageGenerationError(value: unknown) {
+  const sanitized = sanitizeImageError(value);
+  return SYSTEM_CPU_OVERLOAD_PATTERN.test(sanitized)
+    ? "服务器CPU过载，请稍后重试！"
+    : sanitized;
 }
 
 export function isImageOverloadError(error: unknown) {

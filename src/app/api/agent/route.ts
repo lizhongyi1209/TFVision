@@ -190,7 +190,7 @@ function buildUnifiedAgentInstructions(webSearch: boolean, preferredImageModel: 
 - When the request depends on code or files in the selected workspace, inspect them with the coding tools. For requested changes, make scoped edits and run a relevant validation.
 - There is no fixed user-configured workspace. When the user names an absolute local directory, call set_working_directory before other file tools. You may switch directories again whenever the task requires it.
 - Call generate_image when the user wants to create, redraw, edit, transform, or continue modifying an image. Call generate_video when the user wants an actual generated video. Do not call either tool when the user only wants analysis, critique, a prompt, or instructions.
-- For video generation, choose only v3-omni, seedance-2.0, or seedance-2.0-fast. Use the supplied first-frame image when available.
+- For video generation, choose only v3-omni, seedance-2.0, seedance-2.0-fast, or seedance-2.0-mini. Use the supplied first-frame image when available.
 - When the user explicitly gives an absolute local folder for a media task, preserve it as outputDirectory. Never invent an output directory.
 - ${preferredImageModel
     ? `The user explicitly selected ${preferredImageModel}. Use that model in generate_image.`
@@ -236,7 +236,7 @@ const VIDEO_GENERATION_TOOL = {
     properties: {
       model: {
         type: "string",
-        enum: ["v3-omni", "seedance-2.0", "seedance-2.0-fast"],
+        enum: ["v3-omni", "seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini"],
         description: "Video model best suited to the request and available references.",
       },
       mode: { type: "string", enum: ["720p", "1080p", "4K"], description: "Output resolution." },
@@ -259,9 +259,9 @@ const VIDEO_GENERATION_TOOL = {
 function normalizeVideoPlan(rawArguments: string, messages: AgentInputMessage[]): AgentVideoPlan {
   const parsed = extractJsonObject(rawArguments);
   const fallbackPrompt = messages[messages.length - 1]?.content || "生成一段符合用户要求的视频";
-  const videoModels: VideoModel[] = ["v3-omni", "seedance-2.0", "seedance-2.0-fast"];
+  const videoModels: VideoModel[] = ["v3-omni", "seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini"];
   const model = videoModels.includes(parsed?.model as VideoModel) ? parsed?.model as VideoModel : "seedance-2.0-fast";
-  const allowedModes: VideoResolution[] = model === "seedance-2.0-fast"
+  const allowedModes: VideoResolution[] = model === "seedance-2.0-fast" || model === "seedance-2.0-mini"
     ? ["720p"]
     : ["720p", "1080p", "4K"];
   const mode = allowedModes.includes(parsed?.mode as VideoResolution) ? parsed?.mode as VideoResolution : allowedModes[0];
