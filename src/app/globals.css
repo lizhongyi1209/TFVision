@@ -406,18 +406,28 @@ body {
   }
 }
 
-@keyframes generation-orbit {
-  0% {
-    transform: rotate(0deg) scale(0.97);
-    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.08);
+@keyframes generation-glass-sheen {
+  0%, 8% {
+    opacity: 0;
+    transform: translate3d(-20%, 0, 0) rotate(17deg);
+  }
+  24% { opacity: 0.28; }
+  52% { opacity: 0.78; }
+  76% { opacity: 0.22; }
+  92%, 100% {
+    opacity: 0;
+    transform: translate3d(430%, 0, 0) rotate(17deg);
+  }
+}
+
+@keyframes generation-glass-bloom {
+  0%, 100% {
+    opacity: 0.2;
+    transform: translate3d(-7%, -4%, 0) scale(0.94);
   }
   50% {
-    transform: rotate(180deg) scale(1.03);
-    box-shadow: 0 0 0 16px rgba(255, 255, 255, 0);
-  }
-  100% {
-    transform: rotate(360deg) scale(0.97);
-    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+    opacity: 0.48;
+    transform: translate3d(9%, 6%, 0) scale(1.08);
   }
 }
 
@@ -481,17 +491,48 @@ body {
   outline: none;
 }
 
-.tf-generation-grid {
+.tf-generation-glass-dots {
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-    radial-gradient(circle at 50% 48%, rgba(255, 255, 255, 0.08), transparent 38%);
-  background-size: 28px 28px, 28px 28px, 100% 100%;
-  mask-image: linear-gradient(to bottom, transparent, black 18%, black 82%, transparent);
+    radial-gradient(circle, rgba(255, 255, 255, 0.16) 0 1px, transparent 1.35px),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.025), transparent 42%, rgba(255, 255, 255, 0.012));
+  background-position: 0 0, 0 0;
+  background-size: 26px 26px, 100% 100%;
+  opacity: 0.58;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.45), #000 22%, #000 78%, rgba(0, 0, 0, 0.45));
 }
 
-.tf-generation-orbit {
-  animation: generation-orbit 3.4s linear infinite;
+.tf-generation-glass-bloom {
+  background:
+    radial-gradient(ellipse at 28% 34%, rgba(230, 238, 242, 0.12), transparent 34%),
+    radial-gradient(ellipse at 78% 66%, rgba(180, 193, 201, 0.07), transparent 30%);
+  filter: blur(22px);
+  animation: generation-glass-bloom 7.5s ease-in-out infinite;
+}
+
+.tf-generation-glass-sheen {
+  top: -42%;
+  bottom: -42%;
+  left: -36%;
+  width: 32%;
+  background: linear-gradient(
+    90deg,
+    transparent 0,
+    rgba(255, 255, 255, 0.025) 20%,
+    rgba(239, 246, 249, 0.13) 46%,
+    rgba(255, 255, 255, 0.035) 68%,
+    transparent 100%
+  );
+  filter: blur(10px);
+  mix-blend-mode: screen;
+  animation: generation-glass-sheen 6.2s cubic-bezier(0.42, 0, 0.2, 1) infinite;
+}
+
+.tf-generation-glass-edge {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.065),
+    inset 1px 0 0 rgba(255, 255, 255, 0.025),
+    inset -1px 0 0 rgba(0, 0, 0, 0.35),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -503,7 +544,8 @@ body {
   .tf-drop-target-pulse,
   .tf-result-node-enter,
   .tf-editor-enter,
-  .tf-generation-orbit,
+  .tf-generation-glass-bloom,
+  .tf-generation-glass-sheen,
   .tf-agent-activity--live::before,
   .tf-agent-activity__core::before,
   .tf-agent-activity__core > span,

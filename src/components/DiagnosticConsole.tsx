@@ -56,15 +56,17 @@ function PayloadPane({
   pretty,
   truncated,
   onCopy,
+  className,
 }: {
   title: string;
   value: string;
   pretty: boolean;
   truncated?: boolean;
   onCopy: () => void;
+  className?: string;
 }) {
   return (
-    <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[12px] border border-white/[0.08] bg-black/20">
+    <section className={cn("flex min-h-0 flex-1 flex-col overflow-hidden rounded-[12px] border border-white/[0.08] bg-black/20", className)}>
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-white/[0.07] px-3">
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-medium text-fg">{title}</span>
@@ -310,17 +312,35 @@ export function DiagnosticConsole({ open, onClose }: { open: boolean; onClose: (
                         {pretty ? "查看原始文本" : "格式化 JSON"}
                       </button>
                     </div>
-                    <div className="flex min-h-0 flex-1 flex-col gap-3 xl:flex-row">
-                      <PayloadPane title="请求体" value={selected.requestBody} pretty={pretty} truncated={selected.requestTruncated} onCopy={() => void copy("request", selected.requestBody)} />
-                      <PayloadPane
-                        title={selected.ok ? "原始响应体" : "原始错误"}
-                        value={selected.ok ? selected.responseBody : diagnosticRawError(selected)}
-                        pretty={selected.ok ? pretty : false}
-                        truncated={selected.responseTruncated}
-                        onCopy={() => void copy("response", selected.ok ? selected.responseBody : diagnosticRawError(selected))}
-                      />
+                    <div className="nowheel flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto xl:flex-row xl:overflow-hidden">
+                      <div className="flex min-h-[420px] min-w-0 flex-1 flex-col gap-3 xl:min-h-0">
+                        <PayloadPane
+                          title="HTTP 请求头"
+                          value={selected.requestHeaders ?? ""}
+                          pretty={false}
+                          truncated={selected.requestHeadersTruncated}
+                          onCopy={() => void copy("requestHeaders", selected.requestHeaders ?? "")}
+                        />
+                        <PayloadPane title="请求体" value={selected.requestBody} pretty={pretty} truncated={selected.requestTruncated} onCopy={() => void copy("request", selected.requestBody)} />
+                      </div>
+                      <div className="flex min-h-[420px] min-w-0 flex-1 flex-col gap-3 xl:min-h-0">
+                        <PayloadPane
+                          title="HTTP 响应头"
+                          value={selected.responseHeaders ?? ""}
+                          pretty={false}
+                          truncated={selected.responseHeadersTruncated}
+                          onCopy={() => void copy("responseHeaders", selected.responseHeaders ?? "")}
+                        />
+                        <PayloadPane
+                          title={selected.ok ? "原始响应体" : "原始错误"}
+                          value={selected.ok ? selected.responseBody : diagnosticRawError(selected)}
+                          pretty={selected.ok ? pretty : false}
+                          truncated={selected.responseTruncated}
+                          onCopy={() => void copy("response", selected.ok ? selected.responseBody : diagnosticRawError(selected))}
+                        />
+                      </div>
                     </div>
-                    {copied ? <div className="pointer-events-none absolute bottom-6 right-6 rounded-control border border-white/[0.1] bg-[#202023] px-3 py-2 text-[11px] text-fg shadow-xl">已复制{copied === "endpoint" ? "端点" : copied === "request" ? "请求体" : "响应体"}</div> : null}
+                    {copied ? <div className="pointer-events-none absolute bottom-6 right-6 rounded-control border border-white/[0.1] bg-[#202023] px-3 py-2 text-[11px] text-fg shadow-xl">已复制{copied === "endpoint" ? "端点" : copied === "requestHeaders" ? "请求头" : copied === "responseHeaders" ? "响应头" : copied === "request" ? "请求体" : "响应体"}</div> : null}
                   </>
                 ) : (
                   <div className="flex h-full flex-col items-center justify-center text-center">

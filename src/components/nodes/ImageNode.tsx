@@ -36,7 +36,7 @@ import { NodeShell, RunningVeil } from "./NodeShell";
 import { Chip } from "../ui";
 import { AmazonAiMetadataPanel } from "../AmazonAiMetadataPanel";
 import { ImeSafeTextarea } from "../ImeSafeTextarea";
-import { formatGenerationDuration } from "@/lib/generationTiming";
+import { formatGenerationDuration, formatGenerationElapsedSeconds } from "@/lib/generationTiming";
 
 const isImageFile = (file: File) =>
   file.type.startsWith("image/") || /\.(?:png|jpe?g|webp)$/i.test(file.name);
@@ -92,7 +92,8 @@ const ImageGenerationElapsed = memo(function ImageGenerationElapsed({
     return () => window.clearInterval(timer);
   }, [startedAt]);
 
-  return <span className="font-mono tabular-nums">{formatGenerationDuration(elapsedMs)}</span>;
+  const seconds = formatGenerationElapsedSeconds(elapsedMs);
+  return <span aria-label={`已生成 ${seconds} 秒`} className="font-mono tabular-nums">{seconds}</span>;
 });
 
 function normalizeBatchPrompts(data: ImageNodeData) {
@@ -716,25 +717,26 @@ function GeneratedImageResult({
         )}
       >
         {running ? (
-          <div role="status" aria-label="图片生成中" className="absolute inset-0 overflow-hidden bg-ink-2">
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.045),transparent_42%)]" />
+          <div role="status" aria-label="图片生成中" className="absolute inset-0 overflow-hidden bg-[#0c0c0e]">
+            <div className="tf-generation-glass-dots pointer-events-none absolute inset-0" />
+            <div className="tf-generation-glass-bloom pointer-events-none absolute -inset-[18%]" />
+            <div className="tf-generation-glass-sheen pointer-events-none absolute" />
+            <div className="tf-generation-glass-edge pointer-events-none absolute inset-0 rounded-[11px]" />
             <button
               type="button"
-              title="取消生成"
+              title="取消请求"
               aria-label="取消图片生成"
               onClick={(event) => {
                 event.stopPropagation();
                 cancelImageGeneration(id);
               }}
-              className="nodrag group/cancel absolute left-1/2 top-1/2 flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-white/12 bg-white/[0.045] text-fg-dim shadow-[0_12px_38px_rgba(0,0,0,0.28)] backdrop-blur transition-[border-color,background-color,color,transform] hover:border-danger/45 hover:bg-danger/10 hover:text-danger active:scale-95"
+              className="nodrag group/cancel absolute right-3 top-3 z-10 flex h-8 items-center gap-1.5 rounded-full border border-white/10 bg-black/25 px-2.5 text-[10px] font-medium text-fg-mute shadow-[0_8px_24px_rgba(0,0,0,0.24)] backdrop-blur-md transition-[border-color,background-color,color,transform] hover:border-danger/45 hover:bg-danger/10 hover:text-danger active:scale-95"
             >
-              <Icon name="X" size={17} weight="bold" className="transition-transform group-hover/cancel:scale-110" />
+              <Icon name="X" size={11} weight="bold" className="transition-transform group-hover/cancel:rotate-90" />
+              <span>取消</span>
             </button>
-            <div className="pointer-events-none absolute inset-x-0 bottom-5 flex items-baseline justify-center gap-2 text-[10px] tracking-[0.08em] text-fg-mute">
-              <span>生图耗时</span>
-              <span className="text-[12px] tracking-normal text-fg-dim">
-                <ImageGenerationElapsed startedAt={data.startedAt} />
-              </span>
+            <div className="pointer-events-none absolute inset-x-0 bottom-5 flex justify-center text-[13px] leading-none text-fg-dim">
+              <ImageGenerationElapsed startedAt={data.startedAt} />
             </div>
           </div>
         ) : data.status === "success" && urls.length ? (

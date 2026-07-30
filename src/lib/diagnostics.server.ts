@@ -3,6 +3,7 @@ import type { DiagnosticCategory, DiagnosticEntry } from "./diagnostics";
 const MAX_ENTRIES = 100;
 const MAX_TEXT_LENGTH = 512 * 1024;
 const SECRET_KEYS = new Set(["authorization", "api_key", "apikey", "access_token", "token"]);
+const SECRET_HEADER_PATTERN = /^(?:authorization|proxy-authorization|cookie|set-cookie|api-key|x-api-key|x-auth-token|x-access-token|x-amz-security-token|cf-access-client-secret)$/i;
 
 declare global {
   // eslint-disable-next-line no-var
@@ -59,6 +60,19 @@ export function sanitizeDiagnosticBody(body: BodyInit | null | undefined) {
   if (body instanceof ArrayBuffer) return { value: `[binary ArrayBuffer, ${body.byteLength} bytes]`, truncated: false };
   if (ArrayBuffer.isView(body)) return { value: `[binary ${body.constructor.name}, ${body.byteLength} bytes]`, truncated: false };
   return { value: `[${Object.prototype.toString.call(body)}]`, truncated: false };
+}
+
+export function sanitizeDiagnosticHeaders(headers: HeadersInit | null | undefined) {
+  if (!headers) return { value: "", truncated: false };
+  const sanitized: Record<string, string> = {};
+  new Headers(headers).forEach((value, key) => {
+    sanitized[key] = SECRET_HEADER_PATTERN.test(key) ? "[REDACTED]" : value;
+  });
+  return truncate(JSON.stringify(
+    Object.fromEntries(Object.entries(sanitized).sort(([left], [right]) => left.localeCompare(right))),
+    null,
+    2,
+  ));
 }
 
 function append(entry: DiagnosticEntry) {
@@ -119,6 +133,7 @@ export async function diagnosticFetch(
   const startedAt = Date.now();
   const endpoint = input instanceof Request ? input.url : String(input);
   const method = String(init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+  const requestHeaders = sanitizeDiagnosticHeaders(init?.headers ?? (input instanceof Request ? input.headers : undefined));
   const request = sanitizeDiagnosticBody(init?.body);
 
   try {
@@ -129,6 +144,7 @@ export async function diagnosticFetch(
     } catch (error) {
       raw = `[无法读取响应体：${error instanceof Error ? error.message : String(error)}]`;
     }
+    const responseHeaders = sanitizeDiagnosticHeaders(response.headers);
     const responseBody = truncate(raw);
     append({
       id: crypto.randomUUID(),
@@ -136,14 +152,18 @@ export async function diagnosticFetch(
       label: meta.label,
       method,
       endpoint,
+      requestHeaders: requestHeaders.value,
       requestBody: request.value,
       responseStatus: response.status,
       responseStatusText: response.statusText,
+      responseHeaders: responseHeaders.value,
       responseBody: responseBody.value,
       startedAt,
       durationMs: Date.now() - startedAt,
       ok: response.ok,
+      requestHeadersTruncated: requestHeaders.truncated || undefined,
       requestTruncated: request.truncated || undefined,
+      responseHeadersTruncated: responseHeaders.truncated || undefined,
       responseTruncated: responseBody.truncated || undefined,
     });
     return response;
@@ -155,15 +175,18 @@ export async function diagnosticFetch(
       label: meta.label,
       method,
       endpoint,
+      requestHeaders: requestHeaders.value,
       requestBody: request.value,
       responseStatus: null,
       responseStatusText: "",
+      responseHeaders: "",
       responseBody: "",
       startedAt,
       durationMs: Date.now() - startedAt,
       ok: false,
       error: message,
       errorDetails: diagnosticErrorDetails(error),
+      requestHeadersTruncated: requestHeaders.truncated || undefined,
       requestTruncated: request.truncated || undefined,
     });
     throw error;

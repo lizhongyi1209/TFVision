@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { diagnosticRawError, diagnosticStatusCode, type DiagnosticEntry } from "../diagnostics.ts";
-import { sanitizeDiagnosticBody } from "../diagnostics.server.ts";
+import { sanitizeDiagnosticBody, sanitizeDiagnosticHeaders } from "../diagnostics.server.ts";
 
 function diagnosticEntry(patch: Partial<DiagnosticEntry> = {}): DiagnosticEntry {
   return {
@@ -10,9 +10,11 @@ function diagnosticEntry(patch: Partial<DiagnosticEntry> = {}): DiagnosticEntry 
     label: "上传素材",
     method: "POST",
     endpoint: "https://example.com/upload",
+    requestHeaders: "",
     requestBody: "",
     responseStatus: 200,
     responseStatusText: "OK",
+    responseHeaders: "",
     responseBody: "",
     startedAt: 0,
     durationMs: 1,
@@ -41,6 +43,24 @@ test("诊断请求体标记二进制内容而不复制媒体数据", () => {
     value: "[binary Uint8Array, 256 bytes]",
     truncated: false,
   });
+});
+
+test("诊断 HTTP 头隐藏鉴权信息并保留排障字段", () => {
+  const sanitized = sanitizeDiagnosticHeaders({
+    Authorization: "Bearer sk-secret",
+    Cookie: "session=secret",
+    "Content-Type": "application/json",
+    "X-Request-Id": "request-123",
+    "X-RateLimit-Remaining-Tokens": "42",
+  });
+  const parsed = JSON.parse(sanitized.value) as Record<string, string>;
+
+  assert.equal(parsed.authorization, "[REDACTED]");
+  assert.equal(parsed.cookie, "[REDACTED]");
+  assert.equal(parsed["content-type"], "application/json");
+  assert.equal(parsed["x-request-id"], "request-123");
+  assert.equal(parsed["x-ratelimit-remaining-tokens"], "42");
+  assert.equal(sanitized.truncated, false);
 });
 
 test("列表状态只显示紧凑错误码", () => {

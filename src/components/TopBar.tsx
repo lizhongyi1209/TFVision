@@ -138,7 +138,7 @@ function TokenBalance({ onOpenSettings }: { onOpenSettings: () => void }) {
   const settings = useStudio((s) => s.settings);
   const [balance, setBalance] = useState<BalanceState>({ status: "idle" });
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = false) => {
     const latestSettings = useStudio.getState().settings;
     if (!latestSettings?.hasApiKey) {
       setBalance({ status: "idle" });
@@ -146,7 +146,7 @@ function TokenBalance({ onOpenSettings }: { onOpenSettings: () => void }) {
     }
     setBalance((current) => current.status === "success" ? current : { status: "loading" });
     try {
-      const response = await fetch("/api/account/balance?force=1", { cache: "no-store" });
+      const response = await fetch(`/api/account/balance${force ? "?force=1" : ""}`, { cache: "no-store" });
       const payload = (await response.json().catch(() => ({}))) as {
         ok?: boolean;
         display?: string;
@@ -174,9 +174,9 @@ function TokenBalance({ onOpenSettings }: { onOpenSettings: () => void }) {
     if (!settings?.hasApiKey) {
       setBalance({ status: "idle" });
     } else {
-      setBalance({ status: "idle" });
+      void refresh();
     }
-    const refreshAfterTask = () => void refresh();
+    const refreshAfterTask = () => void refresh(true);
     window.addEventListener(TOKEN_BALANCE_REFRESH_EVENT, refreshAfterTask);
     return () => {
       window.removeEventListener(TOKEN_BALANCE_REFRESH_EVENT, refreshAfterTask);
@@ -192,6 +192,8 @@ function TokenBalance({ onOpenSettings }: { onOpenSettings: () => void }) {
       : `令牌剩余额度${balance.rawQuota != null ? `（${balance.rawQuota.toLocaleString("zh-CN")} quota）` : ""} · 点击管理令牌`
     : balance.status === "error"
       ? `${balance.message} · 点击检查令牌设置`
+      : balance.status === "loading"
+        ? "正在查询令牌余额"
       : "完成生成或 Agent 对话后更新余额";
 
   return (
@@ -225,6 +227,8 @@ function TokenBalance({ onOpenSettings }: { onOpenSettings: () => void }) {
         <span><span className="mr-1 font-sans text-[11px] font-medium text-[#c7ff80]/70">余额</span>{balance.display}</span>
       ) : balance.status === "error" ? (
         <span className="font-sans text-[12px]">余额获取失败</span>
+      ) : balance.status === "loading" ? (
+        <span className="font-sans text-[12px] font-medium">余额更新中</span>
       ) : (
         <span className="font-sans text-[12px] font-medium">余额待更新</span>
       )}

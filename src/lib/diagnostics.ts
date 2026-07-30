@@ -6,16 +6,20 @@ export type DiagnosticEntry = {
   label: string;
   method: string;
   endpoint: string;
+  requestHeaders: string;
   requestBody: string;
   responseStatus: number | null;
   responseStatusText: string;
+  responseHeaders: string;
   responseBody: string;
   startedAt: number;
   durationMs: number;
   ok: boolean;
   error?: string;
   errorDetails?: string;
+  requestHeadersTruncated?: boolean;
   requestTruncated?: boolean;
+  responseHeadersTruncated?: boolean;
   responseTruncated?: boolean;
 };
 
